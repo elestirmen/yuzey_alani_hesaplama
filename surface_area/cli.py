@@ -22,6 +22,7 @@ from surface_area.io import (
 from surface_area.methods import AreaResult, SlopeMethod, compute_methods_on_raster_with_timings
 from surface_area.multiscale import compute_multiscale_on_raster
 from surface_area.plotting import plot_a3d_vs_gsd, plot_micro_ratio_vs_gsd, plot_ratio_vs_gsd
+from surface_area.progress import ProgressPrinter
 
 
 DEFAULT_GSD_LIST = [0.1, 0.5, 1, 2, 5, 10, 20, 50]
@@ -149,6 +150,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     outdir: Path = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
+    progress = ProgressPrinter()
+
     if not dem.exists():
         print(f"ERROR: DEM not found: {dem}", file=sys.stderr)
         return 2
@@ -181,7 +184,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     slope_method_n: SlopeMethod = "horn" if args.slope_method.strip().lower() == "horn" else "zt"
 
     versions = _env_versions()
-    run_ts = datetime.now(timezone.utc).isoformat()
+    run_dt = datetime.now(timezone.utc)
+    run_ts = run_dt.isoformat()
+    run_tag = run_dt.strftime("%Y%m%dT%H%M%SZ")
 
     run_info = {
         "timestamp_utc": run_ts,
@@ -204,7 +209,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     rows: list[dict] = []
     resampled_dir = outdir / "resampled"
-    tmp_dir = outdir / "_tmp"
+    tmp_dir = outdir / "_tmp" / f"run_{run_tag}"
     if args.keep_resampled:
         resampled_dir.mkdir(parents=True, exist_ok=True)
     else:
@@ -216,10 +221,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if needs_multiscale:
         compute_set.add("gradient_multiplier")  # base method for multiscale
 
-    for gsd_m in gsd_list:
+    total_gsd = len(gsd_list)
+    for gsd_idx, gsd_m in enumerate(gsd_list, start=1):
         tag = safe_gsd_tag(gsd_m)
         dst_path = (resampled_dir if args.keep_resampled else tmp_dir) / f"dem_gsd_{tag}m.tif"
 
+        progress.log(f"[{gsd_idx}/{total_gsd}] Resampling DEM at gsd={gsd_m:g} ...")
         t0 = perf_counter()
         res_info = resample_dem(
             src_path=dem,
@@ -233,6 +240,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         dx = res_info.dx
         dy = res_info.dy
 
+        method_summary = ", ".join(sorted(compute_set))
+        progress.log(f"[{gsd_idx}/{total_gsd}] Computing methods: {method_summary}")
+
+        def _methods_progress(_: str, current: int, total: int) -> None:
+            progress.update(label=f"[{gsd_idx}/{total_gsd}] compute (gsd={gsd_m:g})", current=current, total=total)
+
         results, timings = compute_methods_on_raster_with_timings(
             str(dst_path),
             nodata=args.nodata,
@@ -240,7 +253,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             jenness_weight=float(args.jenness_weight),
             slope_method=slope_method_n,
             integral_N=int(args.integral_N),
+            progress=_methods_progress,
         )
+        progress.finish()
 
         for method in base_methods:
             r = results[method]
@@ -279,6 +294,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             sigma_list = _sigma_list_for_gsd(
                 gsd_m, sigma_values=[float(x) for x in args.sigma_m], sigma_mode=args.sigma_mode
             )
+            progress.log(f"[{gsd_idx}/{total_gsd}] Multiscale decomposition (sigma_m={sigma_list})")
+
+            def _ms_progress(stage: str, current: int, total: int) -> None:
+                label = f"[{gsd_idx}/{total_gsd}] {stage} (gsd={gsd_m:g})"
+                progress.update(label=label, current=current, total=total)
+
             t0 = perf_counter()
             ms = compute_multiscale_on_raster(
                 str(dst_path),
@@ -286,8 +307,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 base_method=slope_method_n,
                 sigma_m_list=sigma_list,
                 a_total=results.get("gradient_multiplier"),
+                progress=_ms_progress,
             )
             t_ms = perf_counter() - t0
+            progress.finish()
 
             runtime_each = float(t_ms) / float(len(ms)) if ms else float("nan")
             for ms_res in ms:
@@ -356,6 +379,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     _results_wide(df_long).to_csv(wide_path, index=False)
 
     if args.plots:
+        progress.log("Plotting...")
         plot_a3d_vs_gsd(df_long, outdir)
         plot_ratio_vs_gsd(df_long, outdir)
         plot_micro_ratio_vs_gsd(df_long, outdir)
@@ -376,4 +400,3 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 2
-

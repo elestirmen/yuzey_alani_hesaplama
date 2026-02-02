@@ -45,9 +45,9 @@ git clone <repo-url>
 cd yuzey_alani_hesaplama
 
 # 2. Sanal ortam oluşturun (önerilir)
-python -m venv venv
-venv\Scripts\activate   # Windows
-# source venv/bin/activate  # Linux/macOS
+python -m venv .venv
+.venv\Scripts\activate   # Windows
+# source .venv/bin/activate  # Linux/macOS
 
 # 3. Bağımlılıkları yükleyin
 pip install -r requirements.txt
@@ -57,16 +57,40 @@ pip install -r requirements.txt
 
 ## Kullanım
 
-### Temel Kullanım
+### Önerilen (main.py)
 
 ```bash
-python -m surface_area run --dem <DEM_DOSYASI> --outdir <CIKTI_KLASORU>
+python main.py
 ```
+
+Parametreleri IDE üzerinden tek dosyadan yönetmek için `main.py` içindeki
+`DEFAULT_RUN_CONFIG` alanını düzenleyin. Parametre açıklamaları için:
+
+```bash
+python main.py --help
+```
+
+Argüman vererek çalıştırmak isterseniz (`run` alt-komutu):
+
+```bash
+python main.py run --dem <DEM_DOSYASI> --outdir <CIKTI_KLASORU>
+```
+
+### IDE (VS Code) ile Çalıştırma
+
+Bu repoda hazır **VS Code** çalıştırma ayarları bulunur:
+
+- `Run and Debug (Ctrl+Shift+D)` → **SurfaceArea: main.py**
+- Python interpreter olarak `.venv` seçin (Ctrl+Shift+P → Python: Select Interpreter)
+
+Gerekirse bir kez bağımlılıkları kurmak için:
+
+- `Terminal → Run Task…` → **SurfaceArea: install deps (venv)**
 
 ### Tam Özellikli Örnek
 
 ```bash
-python -m surface_area run ^
+python main.py run ^
   --dem dag_dsm.tif ^
   --outdir out ^
   --gsd 0.5 1 2 5 10 ^
@@ -80,7 +104,9 @@ python -m surface_area run ^
   --plots
 ```
 
-### CLI Parametreleri
+### Parametreler
+
+Aşağıdaki seçenekler `python main.py run ...` için geçerlidir.
 
 | Parametre | Açıklama | Varsayılan |
 |-----------|----------|------------|

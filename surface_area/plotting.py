@@ -59,6 +59,9 @@ def plot_micro_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path |
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    if "micro_ratio" not in df_long.columns:
+        return None
+
     ms = df_long.dropna(subset=["micro_ratio"])
     if ms.empty:
         return None
@@ -88,4 +91,3 @@ def plot_micro_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path |
     fig.savefig(path, dpi=160)
     plt.close(fig)
     return path
-

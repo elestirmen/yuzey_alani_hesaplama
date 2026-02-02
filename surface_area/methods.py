@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 import numpy as np
 
-from surface_area.io import iter_block_windows, read_window_float32
+from surface_area.io import block_window_count, iter_block_windows, read_window_float32
+
+ProgressFn = Callable[[str, int, int], None]
 
 
 SlopeMethod = Literal["horn", "zt"]
@@ -516,6 +518,7 @@ def compute_methods_on_raster_with_timings(
     jenness_weight: float,
     slope_method: SlopeMethod,
     integral_N: int,
+    progress: ProgressFn | None = None,
 ) -> tuple[dict[str, AreaResult], dict[str, float]]:
     """Like compute_methods_on_raster, but also returns per-method compute time (seconds).
 
@@ -546,10 +549,14 @@ def compute_methods_on_raster_with_timings(
         if dx <= 0 or dy <= 0:
             raise ValueError(f"Invalid pixel sizes from transform: dx={dx}, dy={dy}")
 
+        total_blocks = block_window_count(ds)
+        block_i = 0
+
         overlap = 1
         need_corners = bool({"tin_2tri_cell", "bilinear_patch_integral"} & wanted)
 
         for w in iter_block_windows(ds):
+            block_i += 1
             z, valid, inner = read_window_float32(ds, w, nodata=nodata, overlap=overlap)
 
             # Common corner-derived values for TIN / bilinear.
@@ -613,6 +620,9 @@ def compute_methods_on_raster_with_timings(
                 v_in = v[inner]
                 acc_a3d["bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
                 acc_n["bilinear_patch_integral"] += int(v_in.sum())
+
+            if progress is not None:
+                progress("compute", block_i, total_blocks)
 
     results = {m: AreaResult(a3d=acc_a3d[m], valid_cells=acc_n[m]) for m in acc_a3d}
     return results, acc_t

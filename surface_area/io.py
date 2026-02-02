@@ -231,8 +231,21 @@ def iter_block_windows(ds: rasterio.DatasetReader) -> Iterator[Window]:
         yield w
 
 
+def block_window_count(ds: rasterio.DatasetReader) -> int:
+    """Return total number of block windows for band 1.
+
+    Uses dataset block shape when available; falls back to iterating block_windows.
+    """
+    try:
+        block_y, block_x = ds.block_shapes[0]
+        if int(block_x) > 0 and int(block_y) > 0:
+            return int(math.ceil(ds.width / float(block_x)) * math.ceil(ds.height / float(block_y)))
+    except Exception:
+        pass
+    return sum(1 for _ in ds.block_windows(1))
+
+
 def gaussian_overlap_pixels(sigma_px: float, *, truncate: float = 4.0) -> int:
     if sigma_px <= 0:
         return 0
     return int(math.ceil(truncate * float(sigma_px)))
-

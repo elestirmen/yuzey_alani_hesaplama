@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from surface_area.io import gaussian_overlap_pixels, iter_block_windows, read_window_float32
+from surface_area.io import block_window_count, gaussian_overlap_pixels, iter_block_windows, read_window_float32
 from surface_area.methods import AreaResult, SlopeMethod, gradient_multiplier_cell_areas
+
+ProgressFn = Callable[[str, int, int], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +107,7 @@ def compute_multiscale_on_raster(
     sigma_m_list: list[float],
     truncate: float = 4.0,
     a_total: AreaResult | None = None,
+    progress: ProgressFn | None = None,
 ) -> list[MultiscaleAreaResult]:
     """Blockwise multiscale decomposition for large rasters.
 
@@ -132,17 +135,23 @@ def compute_multiscale_on_raster(
         if dx <= 0 or dy <= 0:
             raise ValueError(f"Invalid pixel sizes from transform: dx={dx}, dy={dy}")
 
+        total_blocks = block_window_count(ds)
+
         # Compute a_total if not provided (single-pass).
         if a_total is None:
             total_a3d = 0.0
             total_n = 0
+            block_i = 0
             for w in iter_block_windows(ds):
+                block_i += 1
                 z, valid, inner = read_window_float32(ds, w, nodata=nodata, overlap=1)
                 areas, cell_valid = gradient_multiplier_cell_areas(z, dx, dy, valid, method=base_method)
                 areas_in = areas[inner]
                 valid_in = cell_valid[inner]
                 total_a3d += float(areas_in[valid_in].sum(dtype=np.float64))
                 total_n += int(valid_in.sum())
+                if progress is not None:
+                    progress("multiscale_total", block_i, total_blocks)
             a_total = AreaResult(a3d=total_a3d, valid_cells=total_n)
 
         # Choose an overlap large enough for the largest sigma and the gradient stencil.
@@ -153,6 +162,9 @@ def compute_multiscale_on_raster(
             gaussian_overlap_pixels(max_sigma_px_col, truncate=truncate),
         )
         overlap = pad + 1  # +1 for gradient stencil
+
+        total_units = int(total_blocks) * int(len(sigma_m_list_f))
+        unit_i = 0
 
         for w in iter_block_windows(ds):
             z, valid, inner = read_window_float32(ds, w, nodata=nodata, overlap=overlap)
@@ -179,6 +191,9 @@ def compute_multiscale_on_raster(
                 valid_in = cell_valid[inner]
                 acc_topo[sigma_m] += float(areas_in[valid_in].sum(dtype=np.float64))
                 acc_n[sigma_m] += int(valid_in.sum())
+                unit_i += 1
+                if progress is not None:
+                    progress("multiscale", unit_i, total_units)
 
     assert a_total is not None
     out: list[MultiscaleAreaResult] = []
