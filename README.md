@@ -2,6 +2,32 @@
 
 > DEM/DSM GeoTIFF verilerinden 3D yüzey alanı (A3D) hesaplama için kapsamlı Python kütüphanesi
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Open%20Source-green.svg)](#lisans)
+
+---
+
+## İçindekiler
+
+- [Genel Bakış](#genel-bakış)
+- [Kurulum](#kurulum)
+  - [Gereksinimler](#gereksinimler)
+  - [Adım Adım Kurulum](#adım-adım-kurulum)
+  - [Bağımlılıklar](#bağımlılıklar)
+  - [Kurulum Sorun Giderme](#kurulum-sorun-giderme)
+- [Hızlı Başlangıç](#hızlı-başlangıç)
+- [Kullanım](#kullanım)
+- [Parametreler](#parametreler)
+  - [Zorunlu Parametreler](#zorunlu-parametreler)
+  - [İsteğe Bağlı Parametreler](#isteğe-bağlı-parametreler)
+  - [Parametre Detayları](#parametre-detayları)
+- [Yöntemler](#yöntemler)
+- [Çıktılar](#çıktılar)
+- [Teknik Detaylar](#teknik-detaylar)
+- [Testler](#testler)
+- [Performans İpuçları](#performans-ipuçları)
+- [Kaynaklar](#kaynaklar)
+
 ---
 
 ## Genel Bakış
@@ -10,12 +36,14 @@ Bu proje, Sayısal Yükseklik Modeli (DEM) veya Sayısal Yüzey Modeli (DSM) Geo
 
 ### Temel Özellikler
 
-- **Çoklu Yöntem Desteği**: 5 farklı yüzey alanı hesaplama algoritması
-- **Çoklu Çözünürlük Analizi**: Farklı GSD (Ground Sample Distance) değerlerinde yeniden örnekleme
-- **Büyük Dosya Desteği**: `rasterio.block_windows` ile bellek-etkin blok işleme
-- **Multiscale Analiz**: Gaussian alçak geçiren filtre ile topoğrafik/mikro alan ayrıştırması
-- **Zengin Çıktılar**: CSV (long + wide format), JSON metadata ve PNG grafikler
-- **Nodata Yönetimi**: Otomatik nodata maskeleme ve kenar hücre kontrolü
+| Özellik | Açıklama |
+|---------|----------|
+| **Çoklu Yöntem Desteği** | 5 farklı yüzey alanı hesaplama algoritması |
+| **Çoklu Çözünürlük Analizi** | Farklı GSD (Ground Sample Distance) değerlerinde yeniden örnekleme |
+| **Büyük Dosya Desteği** | `rasterio.block_windows` ile bellek-etkin blok işleme |
+| **Multiscale Analiz** | Gaussian alçak geçiren filtre ile topoğrafik/mikro alan ayrıştırması |
+| **Zengin Çıktılar** | CSV (long + wide format), JSON metadata ve PNG grafikler |
+| **Nodata Yönetimi** | Otomatik nodata maskeleme ve kenar hücre kontrolü |
 
 ---
 
@@ -23,71 +51,409 @@ Bu proje, Sayısal Yükseklik Modeli (DEM) veya Sayısal Yüzey Modeli (DSM) Geo
 
 ### Gereksinimler
 
-- **Python**: 3.10+ (test edildi: 3.12)
-- **İşletim Sistemi**: Windows, Linux, macOS
+| Gereksinim | Minimum | Önerilen |
+|------------|---------|----------|
+| **Python** | 3.10 | 3.12 |
+| **RAM** | 4 GB | 8+ GB (büyük DEM'ler için) |
+| **Disk** | 100 MB | Veri boyutuna bağlı |
+| **İşletim Sistemi** | Windows 10, Linux (Ubuntu 20.04+), macOS 11+ | - |
+
+### Adım Adım Kurulum
+
+#### 1. Repository'yi Klonlayın
+
+```bash
+git clone <repo-url>
+cd yuzey_alani_hesaplama
+```
+
+#### 2. Sanal Ortam Oluşturun (Önerilir)
+
+**Windows (PowerShell):**
+```powershell
+# Sanal ortam oluştur
+python -m venv .venv
+
+# Sanal ortamı etkinleştir
+.venv\Scripts\Activate.ps1
+
+# Not: ExecutionPolicy hatası alırsanız önce şunu çalıştırın:
+# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**Windows (CMD):**
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+**Linux / macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+#### 3. Bağımlılıkları Yükleyin
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### 4. Kurulumu Doğrulayın
+
+```bash
+# Versiyon kontrolü
+python -c "import surface_area; print(f'surface_area v{surface_area.__version__}')"
+
+# Yardım mesajını görüntüle
+python main.py --help
+```
 
 ### Bağımlılıklar
 
-```
-numpy       - Sayısal hesaplamalar
-rasterio    - GeoTIFF okuma/yazma
-scipy       - Gaussian filtre işlemleri
-pandas      - Veri çerçevesi işlemleri
-matplotlib  - Grafik oluşturma
-pytest      - Test çerçevesi
+`requirements.txt` dosyasında tanımlı ana bağımlılıklar:
+
+| Paket | Amaç | Minimum Versiyon |
+|-------|------|------------------|
+| `numpy` | Sayısal hesaplamalar, array işlemleri | 1.24.0 |
+| `rasterio` | GeoTIFF okuma/yazma, CRS işlemleri | 1.3.0 |
+| `scipy` | Gaussian filtre, bilimsel hesaplamalar | 1.10.0 |
+| `pandas` | Veri çerçevesi işlemleri, CSV export | 2.0.0 |
+| `matplotlib` | Grafik oluşturma | 3.7.0 |
+| `pytest` | Test çerçevesi (geliştirme) | 7.0.0 |
+
+**Manuel kurulum (requirements.txt olmadan):**
+```bash
+pip install numpy rasterio scipy pandas matplotlib pytest
 ```
 
-### Kurulum Adımları
+### Kurulum Sorun Giderme
+
+#### Windows'ta rasterio Kurulum Hatası
+
+Rasterio, GDAL kütüphanesine bağımlıdır. Windows'ta sorun yaşarsanız:
+
+```powershell
+# Conda ile kurulum (önerilir)
+conda install -c conda-forge rasterio
+
+# veya wheel dosyasından kurulum
+pip install --find-links=https://github.com/cgohlke/geospatial-wheels/releases rasterio
+```
+
+#### Permission Hatası (Linux/macOS)
 
 ```bash
-# 1. Repoyu klonlayın
-git clone <repo-url>
-cd yuzey_alani_hesaplama
+# --user flag'i ile kur
+pip install --user -r requirements.txt
 
-# 2. Sanal ortam oluşturun (önerilir)
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-# source .venv/bin/activate  # Linux/macOS
+# veya sudo ile (önerilmez)
+sudo pip install -r requirements.txt
+```
 
-# 3. Bağımlılıkları yükleyin
-pip install -r requirements.txt
+#### SSL/Network Hatası
+
+```bash
+# Trusted host ekleyerek kur
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+```
+
+---
+
+## Hızlı Başlangıç
+
+En basit kullanım için:
+
+```bash
+# 1. DEM dosyanızı proje dizinine kopyalayın
+# 2. main.py içindeki DEFAULT_RUN_CONFIG'i düzenleyin
+# 3. Çalıştırın
+python main.py
+```
+
+Veya komut satırından doğrudan:
+
+```bash
+python main.py run --dem dem_dosyam.tif --outdir sonuclar
 ```
 
 ---
 
 ## Kullanım
 
-### Önerilen (main.py)
+### Yöntem 1: IDE Üzerinden (Önerilen)
+
+`main.py` dosyasındaki `DEFAULT_RUN_CONFIG` alanını düzenleyerek parametreleri tek bir yerden yönetebilirsiniz:
+
+```python
+DEFAULT_RUN_CONFIG = RunConfig(
+    dem="vadi_dsm.tif",           # Girdi DEM dosyası
+    outdir="out_vadi",            # Çıktı klasörü
+    gsd=[0.5, 1, 2, 5, 10],       # Hedef çözünürlükler
+    methods=["gradient_multiplier"],  # Kullanılacak yöntemler
+    plots=True,                   # Grafik üret
+)
+```
+
+Ardından:
 
 ```bash
 python main.py
 ```
 
-Parametreleri IDE üzerinden tek dosyadan yönetmek için `main.py` içindeki
-`DEFAULT_RUN_CONFIG` alanını düzenleyin. Parametre açıklamaları için:
+### Yöntem 2: Komut Satırı Argümanları
+
+```bash
+python main.py run \
+  --dem dag_dsm.tif \
+  --outdir out \
+  --gsd 0.5 1 2 5 10 \
+  --methods gradient_multiplier tin_2tri_cell \
+  --plots
+```
+
+### Yöntem 3: VS Code ile Çalıştırma
+
+Bu repoda hazır **VS Code** çalıştırma ayarları bulunur:
+
+1. `Run and Debug (Ctrl+Shift+D)` → **SurfaceArea: main.py** seçin
+2. Python interpreter olarak `.venv` seçin (`Ctrl+Shift+P` → `Python: Select Interpreter`)
+3. `F5` ile çalıştırın
+
+Bağımlılıkları kurmak için: `Terminal → Run Task…` → **SurfaceArea: install deps (venv)**
+
+### Yardım Mesajı
 
 ```bash
 python main.py --help
 ```
 
-Argüman vererek çalıştırmak isterseniz (`run` alt-komutu):
+---
 
+## Parametreler
+
+### Zorunlu Parametreler
+
+| Parametre | Kısa | Tip | Açıklama |
+|-----------|------|-----|----------|
+| `--dem` | - | `str` | Girdi DEM/DSM GeoTIFF dosya yolu. Mutlak veya göreli yol olabilir. |
+| `--outdir` | - | `str` | Çıktı dizini. Mevcut değilse otomatik oluşturulur. |
+
+**Örnek:**
 ```bash
-python main.py run --dem <DEM_DOSYASI> --outdir <CIKTI_KLASORU>
+python main.py run --dem C:\data\dem.tif --outdir C:\results
 ```
 
-### IDE (VS Code) ile Çalıştırma
+### İsteğe Bağlı Parametreler
 
-Bu repoda hazır **VS Code** çalıştırma ayarları bulunur:
+| Parametre | Tip | Varsayılan | Açıklama |
+|-----------|-----|------------|----------|
+| `--gsd` | `list[float]` | `0.1, 0.5, 1, 2, 5, 10, 20, 50` | Hedef GSD (Ground Sample Distance) değerleri metre cinsinden |
+| `--methods` | `list[str]` | Tümü | Çalıştırılacak hesaplama yöntemleri |
+| `--resampling` | `str` | `bilinear` | Yeniden örnekleme algoritması |
+| `--nodata` | `float` | Otomatik | Nodata değeri (dataset'te tanımlı değilse) |
+| `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
+| `--jenness_weight` | `float` | `0.25` | Jenness yöntemi ağırlık katsayısı |
+| `--integral_N` | `int` | `5` | Bilinear integral alt bölme sayısı |
+| `--sigma_mode` | `str` | `mult` | Multiscale sigma yorumlama modu |
+| `--sigma_m` | `list[float]` | `2.0, 5.0` | Multiscale sigma değerleri |
+| `--plots` | `flag` | Kapalı | PNG grafik üretimini etkinleştirir |
+| `--keep_resampled` | `flag` | Kapalı | Resample edilmiş GeoTIFF'leri saklar |
+| `--reference_csv` | `str` | - | Karşılaştırma için referans CSV dosyası |
 
-- `Run and Debug (Ctrl+Shift+D)` → **SurfaceArea: main.py**
-- Python interpreter olarak `.venv` seçin (Ctrl+Shift+P → Python: Select Interpreter)
+### Parametre Detayları
 
-Gerekirse bir kez bağımlılıkları kurmak için:
+#### `--gsd` (Ground Sample Distance)
 
-- `Terminal → Run Task…` → **SurfaceArea: install deps (venv)**
+Hedef çözünürlük değerlerini metre cinsinden belirler. Analiz, her GSD değeri için ayrı ayrı çalıştırılır.
 
-### Tam Özellikli Örnek
+| Değer | Açıklama | Kullanım Senaryosu |
+|-------|----------|-------------------|
+| `< 1` | Alt-metre çözünürlük | Mikro-topografya, detaylı yüzey analizi |
+| `1-5` | Yüksek çözünürlük | Standart DEM analizi |
+| `5-20` | Orta çözünürlük | Bölgesel analiz, hızlı sonuç |
+| `> 20` | Düşük çözünürlük | Geniş alan analizi, trend görme |
+
+```bash
+# Çoklu GSD değeri (boşlukla ayrılmış)
+--gsd 0.5 1 2 5 10
+
+# Tek değer
+--gsd 1
+```
+
+> **⚠️ Dikkat:** Kaynak DEM'in çözünürlüğünden küçük GSD değerleri upsample yapar ve dosya boyutunu önemli ölçüde artırabilir.
+
+---
+
+#### `--methods` (Hesaplama Yöntemleri)
+
+Kullanılabilir yöntemler:
+
+| Yöntem | Açıklama | Hız | Doğruluk |
+|--------|----------|-----|----------|
+| `gradient_multiplier` | Gradient tabanlı alan çarpanı | ⚡⚡⚡ Çok hızlı | Yüksek |
+| `tin_2tri_cell` | Her hücre 2 üçgen olarak modellenir | ⚡⚡ Hızlı | Yüksek |
+| `jenness_window_8tri` | 3x3 pencerede 8 üçgen | ⚡⚡ Hızlı | Çok yüksek |
+| `bilinear_patch_integral` | Bilinear yüzey integrasyonu | ⚡ Yavaş | En yüksek |
+| `multiscale_decomposed_area` | Çok ölçekli ayrıştırma | ⚡ Yavaş | Özel |
+
+```bash
+# Tek yöntem
+--methods gradient_multiplier
+
+# Çoklu yöntem
+--methods gradient_multiplier tin_2tri_cell jenness_window_8tri
+
+# Tüm yöntemler (belirtilmezse varsayılan)
+# (--methods parametresini kullanmayın)
+```
+
+---
+
+#### `--resampling` (Yeniden Örnekleme)
+
+DEM'i farklı çözünürlüklere dönüştürürken kullanılan interpolasyon yöntemi:
+
+| Değer | Açıklama | Önerilen Kullanım |
+|-------|----------|-------------------|
+| `bilinear` | Bilinear interpolasyon (4 komşu) | **Varsayılan**, çoğu durum için ideal |
+| `nearest` | En yakın komşu (interpolasyon yok) | Kategorik veriler, tam değer koruma |
+| `cubic` | Kübik konvolüsyon (16 komşu) | Yumuşak geçişler, görsel kalite |
+
+```bash
+--resampling bilinear
+--resampling nearest
+--resampling cubic
+```
+
+---
+
+#### `--slope_method` (Eğim Hesaplama Kerneli)
+
+Gradient/eğim hesaplaması için kullanılan kernel:
+
+| Değer | Tam Adı | Stencil | Açıklama |
+|-------|---------|---------|----------|
+| `horn` | Horn (1981) | 3x3 (8 komşu) | Ağırlıklı ortalama, gürültüye dayanıklı |
+| `zt` | Zevenbergen-Thorne (1987) | Cross (4 komşu) | Basit fark, daha hızlı |
+
+**Horn Kernel Formülü:**
+```
+∂z/∂x = [(NE + 2E + SE) - (NW + 2W + SW)] / (8×dx)
+∂z/∂y = [(SW + 2S + SE) - (NW + 2N + NE)] / (8×dy)
+```
+
+**Zevenbergen-Thorne Formülü:**
+```
+∂z/∂x = (E - W) / (2×dx)
+∂z/∂y = (S - N) / (2×dy)
+```
+
+```bash
+--slope_method horn   # Varsayılan, önerilen
+--slope_method zt     # Daha hızlı alternatif
+```
+
+---
+
+#### `--jenness_weight` (Jenness Ağırlık Katsayısı)
+
+`jenness_window_8tri` yöntemi için üçgen alanlarının toplama katsayısı.
+
+| Değer | Açıklama |
+|-------|----------|
+| `0.25` | **Varsayılan** - Her üçgenin 1/4'ü merkez hücreye atanır |
+| `0.125` | Daha konservatif hesaplama |
+| `0.5` | Daha agresif hesaplama |
+
+```bash
+--jenness_weight 0.25
+```
+
+> **Not:** Literatürde yaygın olarak 0.25 değeri kullanılır (Jenness, 2004).
+
+---
+
+#### `--integral_N` (Bilinear Alt Bölme)
+
+`bilinear_patch_integral` yöntemi için her hücrenin kaç alt hücreye bölüneceğini belirler.
+
+| Değer | Alt Hücre | Üçgen Sayısı | Performans |
+|-------|-----------|--------------|------------|
+| `1` | 1×1 = 1 | 2 | Çok hızlı, düşük doğruluk |
+| `5` | 5×5 = 25 | 50 | **Varsayılan**, dengeli |
+| `10` | 10×10 = 100 | 200 | Yüksek doğruluk, yavaş |
+| `20` | 20×20 = 400 | 800 | Çok yüksek doğruluk, çok yavaş |
+
+```bash
+--integral_N 5   # Varsayılan
+--integral_N 10  # Daha hassas
+```
+
+---
+
+#### `--sigma_mode` ve `--sigma_m` (Multiscale Parametreleri)
+
+`multiscale_decomposed_area` yöntemi için Gaussian filtre ayarları.
+
+**`--sigma_mode`:** Sigma değerlerinin nasıl yorumlanacağı
+
+| Değer | Açıklama | Örnek |
+|-------|----------|-------|
+| `mult` | GSD çarpanı olarak | σ = 2 × GSD (GSD=5m ise σ=10m) |
+| `m` | Mutlak metre olarak | σ = 2m (sabit) |
+
+**`--sigma_m`:** Sigma değerleri listesi
+
+```bash
+# GSD'nin 2 ve 5 katı sigma değerleri
+--sigma_mode mult --sigma_m 2 5
+
+# Sabit 10 ve 25 metre sigma
+--sigma_mode m --sigma_m 10 25
+```
+
+**Sigma değeri ne anlama gelir?**
+
+| Sigma | Etki |
+|-------|------|
+| Küçük (1-3) | Daha az düzleştirme, mikro detaylar korunur |
+| Orta (3-10) | Dengeli ayrıştırma |
+| Büyük (10+) | Güçlü düzleştirme, sadece makro topografya kalır |
+
+---
+
+#### `--plots` (Grafik Üretimi)
+
+Bu flag etkinleştirildiğinde PNG formatında grafikler üretilir:
+
+| Grafik | Açıklama |
+|--------|----------|
+| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log ölçek) |
+| `ratio_vs_GSD.png` | A3D/A2D oranı vs GSD |
+| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (sadece multiscale) |
+
+```bash
+--plots  # Grafik üretimini etkinleştir
+```
+
+---
+
+#### `--keep_resampled` (Ara Dosyaları Sakla)
+
+Bu flag etkinleştirildiğinde, her GSD için oluşturulan resample edilmiş GeoTIFF dosyaları saklanır.
+
+```bash
+--keep_resampled  # Ara dosyaları sil
+```
+
+> **⚠️ Dikkat:** Çok sayıda GSD değeri için bu seçenek disk alanını önemli ölçüde kullanabilir.
+
+---
+
+### Tam Örnek Komut
 
 ```bash
 python main.py run ^
@@ -103,27 +469,6 @@ python main.py run ^
   --sigma_m 2 5 ^
   --plots
 ```
-
-### Parametreler
-
-Aşağıdaki seçenekler `python main.py run ...` için geçerlidir.
-
-| Parametre | Açıklama | Varsayılan |
-|-----------|----------|------------|
-| `--dem` | Girdi DEM/DSM GeoTIFF dosyası **(zorunlu)** | - |
-| `--outdir` | Çıktı dizini **(zorunlu)** | - |
-| `--gsd` | Hedef GSD listesi (metre) | `0.1, 0.5, 1, 2, 5, 10, 20, 50` |
-| `--methods` | Çalıştırılacak yöntemler | Tümü |
-| `--resampling` | Yeniden örnekleme metodu: `bilinear`, `nearest`, `cubic` | `bilinear` |
-| `--nodata` | Nodata değeri (dataset'te tanımlı değilse) | Otomatik |
-| `--slope_method` | Gradient kernel: `horn` veya `zt` | `horn` |
-| `--jenness_weight` | Jenness yöntemi ağırlık katsayısı | `0.25` |
-| `--integral_N` | Bilinear integral alt bölme sayısı (NxN) | `5` |
-| `--sigma_mode` | Sigma modu: `mult` (GSD çarpanı) veya `m` (metre) | `mult` |
-| `--sigma_m` | Multiscale sigma değerleri | `2.0, 5.0` |
-| `--plots` | PNG grafik üretimi | Kapalı |
-| `--keep_resampled` | Resample edilmiş GeoTIFF'leri sakla | Kapalı |
-| `--reference_csv` | Karşılaştırma için referans CSV | - |
 
 ---
 
@@ -254,25 +599,26 @@ A_micro : Mikro-pürüzlülük katkısı
 #### `results_long.csv`
 Her satır bir (GSD, method) kombinasyonunu temsil eder.
 
-| Kolon | Açıklama |
-|-------|----------|
-| `gsd_m` | Hedef GSD (metre) |
-| `dx`, `dy` | Gerçek piksel boyutları |
-| `method` | Hesaplama yöntemi |
-| `A2D` | Planimetrik alan (m²) = valid_cells × dx × dy |
-| `A3D` | 3D yüzey alanı (m²) |
-| `ratio` | Alan oranı = A3D / A2D |
-| `valid_cells` | Geçerli hücre sayısı |
-| `runtime_sec` | Hesaplama süresi (saniye, IO hariç) |
-| `note` | Parametre özeti |
+| Kolon | Tip | Açıklama |
+|-------|-----|----------|
+| `gsd_m` | float | Hedef GSD (metre) |
+| `dx`, `dy` | float | Gerçek piksel boyutları |
+| `method` | str | Hesaplama yöntemi |
+| `A2D` | float | Planimetrik alan (m²) = valid_cells × dx × dy |
+| `A3D` | float | 3D yüzey alanı (m²) |
+| `ratio` | float | Alan oranı = A3D / A2D |
+| `valid_cells` | int | Geçerli hücre sayısı |
+| `runtime_sec` | float | Hesaplama süresi (saniye, IO hariç) |
+| `note` | str | Parametre özeti |
 
 **Multiscale için ek kolonlar:**
-| Kolon | Açıklama |
-|-------|----------|
-| `a_topo` | Topoğrafik alan bileşeni |
-| `a_micro` | Mikro-pürüzlülük bileşeni |
-| `micro_ratio` | A_micro / A_total |
-| `sigma_m` | Kullanılan sigma değeri (metre) |
+
+| Kolon | Tip | Açıklama |
+|-------|-----|----------|
+| `a_topo` | float | Topoğrafik alan bileşeni |
+| `a_micro` | float | Mikro-pürüzlülük bileşeni |
+| `micro_ratio` | float | A_micro / A_total |
+| `sigma_m` | float | Kullanılan sigma değeri (metre) |
 
 #### `results_wide.csv`
 Satır = GSD, Sütunlar = `{method}_{metric}` formatında pivot tablo.
@@ -356,9 +702,13 @@ yuzey_alani_hesaplama/
 │   └── test_synthetic.py # Birim testleri
 ├── .githooks/
 │   └── pre-commit       # Git hook'ları
+├── .vscode/
+│   ├── launch.json      # Debug konfigürasyonu
+│   └── tasks.json       # Task tanımları
 ├── .gitignore
-├── requirements.txt
-└── README.md
+├── main.py              # Ana çalıştırma dosyası
+├── requirements.txt     # Bağımlılıklar
+└── README.md            # Bu dosya
 ```
 
 ---
@@ -376,6 +726,9 @@ pytest -v
 
 # Belirli bir test
 pytest tests/test_synthetic.py::test_plane_all_methods_high_accuracy
+
+# Coverage raporu
+pytest --cov=surface_area --cov-report=html
 ```
 
 ### Test Kapsamı
@@ -394,20 +747,23 @@ pytest tests/test_synthetic.py::test_plane_all_methods_high_accuracy
 
 ## Performans İpuçları
 
-1. **Büyük DEM'ler için**: Önce daha kaba GSD'lerle (2-50m) test edin
-2. **Upsample dikkat**: Kaynak çözünürlükten daha küçük GSD çıktıyı çok büyütebilir
-3. **Multiscale**: `--sigma_mode mult` genellikle daha tutarlı sonuç verir
-4. **Bellek**: `--keep_resampled` kapalı tutun (varsayılan)
+| İpucu | Açıklama |
+|-------|----------|
+| **Büyük DEM'ler** | Önce daha kaba GSD'lerle (2-50m) test edin |
+| **Upsample dikkat** | Kaynak çözünürlükten daha küçük GSD çıktıyı çok büyütebilir |
+| **Multiscale** | `--sigma_mode mult` genellikle daha tutarlı sonuç verir |
+| **Bellek** | `--keep_resampled` kapalı tutun (varsayılan) |
+| **Hızlı sonuç** | Sadece `gradient_multiplier` kullanın (en hızlı yöntem) |
 
 ---
 
 ## Sürüm Geçmişi
 
-- **v0.1.0** - İlk sürüm
-  - 5 yüzey alanı hesaplama yöntemi
-  - Multiscale ayrıştırma
-  - CLI arayüzü
-  - CSV/JSON/PNG çıktıları
+### v0.1.0 - İlk Sürüm
+- 5 yüzey alanı hesaplama yöntemi
+- Multiscale ayrıştırma
+- CLI arayüzü
+- CSV/JSON/PNG çıktıları
 
 ---
 
@@ -422,3 +778,9 @@ Bu proje açık kaynak olarak sunulmaktadır.
 - Jenness, J. S. (2004). Calculating landscape surface area from digital elevation models. *Wildlife Society Bulletin*, 32(3), 829-839.
 - Horn, B. K. (1981). Hill shading and the reflectance map. *Proceedings of the IEEE*, 69(1), 14-47.
 - Zevenbergen, L. W., & Thorne, C. R. (1987). Quantitative analysis of land surface topography. *Earth Surface Processes and Landforms*, 12(1), 47-56.
+
+---
+
+## Destek
+
+Sorularınız veya önerileriniz için issue açabilirsiniz.
