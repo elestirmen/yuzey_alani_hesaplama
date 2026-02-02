@@ -1,0 +1,29 @@
+﻿__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local outputs (CLI)
+out*/
+
+# Temporary resampling outputs
+_tmp/
+resampled/
+
+# Common raster/pointcloud data (keep out of Git; often huge)
+*.tif
+*.tiff
+*.img
+*.bil
+*.hdr
+*.vrt
+*.asc
+*.jp2
+*.las
+*.laz
+*.ovr
+*.aux.xml

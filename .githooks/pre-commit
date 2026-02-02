@@ -1,0 +1,69 @@
+#!/bin/sh
+# Prevent committing large files that GitHub would reject (>100MB).
+#
+# Enable these hooks after clone:
+#   git config core.hooksPath .githooks
+
+PYTHON_BIN=""
+if command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v py >/dev/null 2>&1; then
+  PYTHON_BIN="py -3"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  echo "WARNING: python not found; skipping >100MB staged-file check." >&2
+  exit 0
+fi
+
+$PYTHON_BIN - <<'PY'
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+MAX_BYTES = 100 * 1024 * 1024  # 100 MiB
+
+
+def main() -> int:
+    try:
+        out = subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=AM", "-z"],
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        # If we can't query git, don't block commits unexpectedly.
+        return 0
+
+    staged = [p for p in out.split(b"\0") if p]
+    bad: list[tuple[str, int]] = []
+
+    for pb in staged:
+        path = pb.decode("utf-8", errors="surrogateescape")
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        if size > MAX_BYTES:
+            bad.append((path, size))
+
+    if not bad:
+        return 0
+
+    sys.stderr.write("ERROR: Commit blocked (files > 100MB staged):\n")
+    for path, size in sorted(bad, key=lambda x: x[1], reverse=True):
+        sys.stderr.write(f"  - {path} ({size} bytes)\n")
+    sys.stderr.write(
+        "Remove these files from the commit (recommended) or move them outside git.\n"
+        "If you intentionally want large files in GitHub, consider Git LFS.\n"
+    )
+    return 1
+
+
+raise SystemExit(main())
+PY
