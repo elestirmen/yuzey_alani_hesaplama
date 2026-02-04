@@ -18,11 +18,13 @@ from surface_area.io import (
     parse_resampling,
     resample_dem,
     safe_gsd_tag,
+    write_dem_float32_geotiff,
 )
 from surface_area.methods import AreaResult, SlopeMethod, compute_methods_on_raster_with_timings
 from surface_area.multiscale import compute_multiscale_on_raster
 from surface_area.plotting import plot_a3d_vs_gsd, plot_micro_ratio_vs_gsd, plot_ratio_vs_gsd
 from surface_area.progress import ProgressPrinter
+from surface_area.synthetic import SYNTHETIC_PRESETS, generate_synthetic_dsm
 
 
 DEFAULT_GSD_LIST = [0.1, 0.5, 1, 2, 5, 10, 20, 50]
@@ -161,6 +163,23 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--reference_csv", type=Path, default=None, help="Optional reference CSV to compare")
     run.add_argument("--plots", action="store_true", help="Generate PNG plots")
     run.add_argument("--keep_resampled", action="store_true", help="Keep resampled GeoTIFFs on disk")
+
+    synth = sub.add_parser("synth", help="Generate a synthetic DSM/DEM GeoTIFF for method comparisons")
+    synth.add_argument("--out", required=True, type=Path, help="Output GeoTIFF path")
+    synth.add_argument("--preset", choices=SYNTHETIC_PRESETS, default="patchwork")
+    synth.add_argument("--rows", type=int, default=512)
+    synth.add_argument("--cols", type=int, default=512)
+    synth.add_argument("--dx", type=float, default=1.0, help="Pixel size in meters")
+    synth.add_argument("--dy", type=float, default=None, help="Pixel size in meters (defaults to --dx)")
+    synth.add_argument("--seed", type=int, default=0)
+    synth.add_argument("--relief", type=float, default=1.0, help="Macro relief multiplier")
+    synth.add_argument("--roughness_m", type=float, default=0.75, help="Micro roughness amplitude (meters)")
+    synth.add_argument("--crs", type=str, default="EPSG:32636")
+    synth.add_argument("--origin_x", type=float, default=500_000.0)
+    synth.add_argument("--origin_y", type=float, default=4_500_000.0)
+    synth.add_argument("--nodata", type=float, default=-9999.0)
+    synth.add_argument("--nodata_holes", type=int, default=0, help="Number of circular nodata holes to punch in")
+    synth.add_argument("--nodata_radius_m", type=float, default=12.0, help="Base radius for nodata holes (meters)")
 
     return p
 
@@ -522,12 +541,48 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_synth(args: argparse.Namespace) -> int:
+    out: Path = args.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    z = generate_synthetic_dsm(
+        rows=int(args.rows),
+        cols=int(args.cols),
+        dx=float(args.dx),
+        dy=None if args.dy is None else float(args.dy),
+        preset=str(args.preset),
+        seed=int(args.seed),
+        relief=float(args.relief),
+        roughness_m=float(args.roughness_m),
+        nodata_value=float(args.nodata) if args.nodata is not None else None,
+        nodata_holes=int(args.nodata_holes),
+        nodata_radius_m=float(args.nodata_radius_m),
+    )
+
+    info = write_dem_float32_geotiff(
+        path=out,
+        z=z,
+        dx=float(args.dx),
+        dy=float(args.dx if args.dy is None else args.dy),
+        crs=str(args.crs),
+        nodata=float(args.nodata) if args.nodata is not None else None,
+        origin_x=float(args.origin_x),
+        origin_y=float(args.origin_y),
+    )
+
+    print(f"Wrote: {out}")
+    print(f"  size: {info.width}x{info.height}  dx={info.dx:g}  dy={info.dy:g}  nodata={info.nodata!r}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "synth":
+        return cmd_synth(args)
 
     parser.print_help()
     return 2

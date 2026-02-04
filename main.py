@@ -30,7 +30,7 @@ class RunConfig:
         metadata={"help": "Hedef çözünürlük listesi (metre). Örn: [2, 5, 10]."},
     )
     methods: list[str] | None = field(
-        default_factory=lambda: ["gradient_multiplier"],
+        default_factory=lambda: None,
         metadata={
             "help": (
                 "Çalıştırılacak yöntemler. Varsayılan: ['gradient_multiplier'] (hızlı). "

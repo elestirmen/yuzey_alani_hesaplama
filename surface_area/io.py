@@ -167,6 +167,77 @@ def resample_dem(
     return get_raster_info(dst_path)
 
 
+def write_dem_float32_geotiff(
+    *,
+    path: str | Path,
+    z: np.ndarray,
+    dx: float,
+    dy: float,
+    crs: CRS | str,
+    nodata: float | None,
+    origin_x: float = 0.0,
+    origin_y: float | None = None,
+    compress: str = "deflate",
+    tiled: bool = True,
+) -> RasterInfo:
+    """Write a single-band float32 DEM/DSM GeoTIFF.
+
+    Notes:
+    - Uses a north-up transform (negative y pixel size).
+    - `origin_y` defaults to rows*dy so that the raster's bottom edge is at y=0.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    if z.ndim != 2:
+        raise ValueError("z must be a 2D array")
+    rows, cols = map(int, z.shape)
+    if rows <= 0 or cols <= 0:
+        raise ValueError("z must be non-empty")
+
+    dx = float(dx)
+    dy = float(dy)
+    if dx <= 0 or dy <= 0:
+        raise ValueError("dx/dy must be > 0")
+
+    if isinstance(crs, str):
+        crs_obj = CRS.from_string(crs)
+    else:
+        crs_obj = crs
+
+    if origin_y is None:
+        origin_y = float(rows) * dy
+
+    transform = Affine(dx, 0.0, float(origin_x), 0.0, -dy, float(origin_y))
+
+    profile = {
+        "driver": "GTiff",
+        "count": 1,
+        "dtype": "float32",
+        "nodata": None if nodata is None else float(nodata),
+        "width": int(cols),
+        "height": int(rows),
+        "crs": crs_obj,
+        "transform": transform,
+        "compress": compress,
+        "predictor": 3,
+        "tiled": bool(tiled),
+        "BIGTIFF": "IF_SAFER",
+    }
+
+    if tiled:
+        # Use a reasonable block size.
+        block = 256
+        block = max(128, min(1024, block))
+        profile.update(blockxsize=block, blockysize=block)
+
+    z32 = z.astype(np.float32, copy=False)
+    with rasterio.open(p, "w", **profile) as dst:
+        dst.write(z32, 1)
+
+    return get_raster_info(p)
+
+
 def _nodata_fill_value(ds: rasterio.DatasetReader, nodata: float | None) -> float:
     if nodata is not None:
         return float(nodata)

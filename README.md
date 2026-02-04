@@ -216,6 +216,22 @@ python main.py run \
   --plots
 ```
 
+### Sentetik DSM (Metot Kıyaslama)
+
+Farklı yüzey şekilleri + girinti/çıkıntılar + pürüzlülük içeren sentetik bir DSM üretip metotları kıyaslayabilirsiniz:
+
+```bash
+# 1) Sentetik DSM üret
+python -m surface_area synth --out synthetic_patchwork.tif --preset patchwork --rows 512 --cols 512 --dx 1 --seed 0 --nodata_holes 5
+
+# 2) Metotları çalıştır
+python -m surface_area run --dem synthetic_patchwork.tif --outdir out_synth --gsd 1 2 5 10 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral --plots
+```
+
+Preset seçenekleri: `plane`, `waves`, `crater_field`, `terraced`, `patchwork`, `mixed`.
+
+> Not: Aynı komutları `python main.py synth ...` şeklinde de kullanabilirsiniz.
+
 ### Yöntem 3: VS Code ile Çalıştırma
 
 Bu repoda hazır **VS Code** çalıştırma ayarları bulunur:
