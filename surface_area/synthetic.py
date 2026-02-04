@@ -169,6 +169,207 @@ def reference_area_two_triangles(
     return float(area.sum(dtype=np.float64))
 
 
+@dataclass(frozen=True, slots=True)
+class SurfaceAreaResult:
+    """Yüzey alanı hesaplama sonucu.
+
+    Attributes:
+        surface_area_m2: Gerçek 3D yüzey alanı (metrekare)
+        planar_area_m2: Düzlemsel (2D projeksiyon) alan (metrekare)
+        surface_ratio: Yüzey alanı / düzlemsel alan oranı (>=1.0)
+        rows: Satır sayısı
+        cols: Sütun sayısı
+        dx: X piksel boyutu (metre)
+        dy: Y piksel boyutu (metre)
+        valid_cells: Geçerli (nodata olmayan) hücre sayısı
+        nodata_cells: Nodata hücre sayısı
+    """
+    surface_area_m2: float
+    planar_area_m2: float
+    surface_ratio: float
+    rows: int
+    cols: int
+    dx: float
+    dy: float
+    valid_cells: int
+    nodata_cells: int
+
+    @property
+    def surface_area_km2(self) -> float:
+        """Yüzey alanı km² cinsinden."""
+        return self.surface_area_m2 / 1e6
+
+    @property
+    def planar_area_km2(self) -> float:
+        """Düzlemsel alan km² cinsinden."""
+        return self.planar_area_m2 / 1e6
+
+    @property
+    def surface_area_ha(self) -> float:
+        """Yüzey alanı hektar cinsinden."""
+        return self.surface_area_m2 / 1e4
+
+    @property
+    def planar_area_ha(self) -> float:
+        """Düzlemsel alan hektar cinsinden."""
+        return self.planar_area_m2 / 1e4
+
+
+def compute_reference_surface_area(
+    z: np.ndarray,
+    *,
+    dx: float,
+    dy: float,
+    nodata_value: float | None = None,
+) -> SurfaceAreaResult:
+    """Bir yükseklik dizisinin GERÇEK (referans) yüzey alanını hesaplar.
+
+    Her hücre iki üçgene bölünerek 3D yüzey alanı hesaplanır.
+    Bu, sentetik verilerin benchmark olarak kullanılması için
+    "ground truth" değerini sağlar.
+
+    Yöntem:
+    -------
+    Her piksel hücresinin 4 köşe noktası alınır (z değerleri enterpolasyonla).
+    Hücre iki üçgene bölünür ve her üçgenin 3D alanı cross-product ile hesaplanır.
+
+    Args:
+        z: 2D yükseklik dizisi (rows x cols)
+        dx: X yönünde piksel boyutu (metre)
+        dy: Y yönünde piksel boyutu (metre)
+        nodata_value: Nodata değeri (None ise tüm hücreler geçerli kabul edilir)
+
+    Returns:
+        SurfaceAreaResult: Detaylı yüzey alanı bilgisi
+
+    Örnek:
+        >>> z = generate_synthetic_dsm(rows=1000, cols=1000, dx=1.0, preset="mountain")
+        >>> result = compute_reference_surface_area(z, dx=1.0, dy=1.0)
+        >>> print(f"Gerçek yüzey alanı: {result.surface_area_m2:.2f} m²")
+        >>> print(f"Yüzey/Düzlem oranı: {result.surface_ratio:.4f}")
+    """
+    z = np.asarray(z, dtype=np.float64)
+    if z.ndim != 2:
+        raise ValueError("z must be a 2D array")
+
+    rows, cols = z.shape
+    if rows < 2 or cols < 2:
+        raise ValueError("z must have at least 2 rows and 2 columns")
+
+    dx = float(dx)
+    dy = float(dy)
+    if dx <= 0 or dy <= 0:
+        raise ValueError("dx and dy must be positive")
+
+    # Nodata mask oluştur
+    if nodata_value is not None:
+        nodata_mask = np.isclose(z, float(nodata_value)) | np.isnan(z)
+    else:
+        nodata_mask = np.isnan(z)
+
+    valid_mask = ~nodata_mask
+    nodata_cells = int(nodata_mask.sum())
+    valid_cells = int(valid_mask.sum())
+
+    # Hücre köşe noktalarındaki z değerlerini al
+    # Her hücre (i,j) için 4 köşe: (i,j), (i,j+1), (i+1,j), (i+1,j+1)
+    # Bunlar için z değerlerini hücre merkezlerinden enterpolasyon yaparak hesapla
+
+    # Basit yaklaşım: Hücre merkezlerini köşe noktaları gibi kullan
+    # Bu, piksel sayısı yeterince büyükse iyi bir yaklaşım
+    z00 = z[:-1, :-1]  # Sol üst
+    z10 = z[:-1, 1:]   # Sağ üst
+    z01 = z[1:, :-1]   # Sol alt
+    z11 = z[1:, 1:]    # Sağ alt
+
+    # Herhangi bir köşesi nodata olan hücreleri atla
+    if nodata_value is not None:
+        nv = float(nodata_value)
+        cell_valid = (
+            ~np.isclose(z00, nv) & ~np.isnan(z00) &
+            ~np.isclose(z10, nv) & ~np.isnan(z10) &
+            ~np.isclose(z01, nv) & ~np.isnan(z01) &
+            ~np.isclose(z11, nv) & ~np.isnan(z11)
+        )
+    else:
+        cell_valid = ~np.isnan(z00) & ~np.isnan(z10) & ~np.isnan(z01) & ~np.isnan(z11)
+
+    # Üçgen 1: (0,0) -> (1,0) -> (1,1)
+    # Vektörler: A = (dx, 0, z10-z00), B = (dx, dy, z11-z00)
+    # Alan = 0.5 * |A x B|
+
+    # Üçgen 1 için vektörler
+    # P0 = (0, 0, z00)
+    # P1 = (dx, 0, z10)
+    # P2 = (dx, dy, z11)
+    # A = P1 - P0 = (dx, 0, z10-z00)
+    # B = P2 - P0 = (dx, dy, z11-z00)
+
+    dz_a = z10 - z00
+    dz_b = z11 - z00
+
+    # Cross product: A x B
+    # |i    j    k   |
+    # |dx   0    dz_a|
+    # |dx   dy   dz_b|
+    # = i(0*dz_b - dz_a*dy) - j(dx*dz_b - dz_a*dx) + k(dx*dy - 0*dx)
+    # = (-dz_a*dy, -dx*(dz_b - dz_a), dx*dy)
+
+    cross1_x = -dz_a * dy
+    cross1_y = -dx * (dz_b - dz_a)
+    cross1_z = dx * dy
+    mag1 = np.sqrt(cross1_x**2 + cross1_y**2 + cross1_z**2)
+
+    # Üçgen 2: (0,0) -> (1,1) -> (0,1)
+    # Vektörler: A = (dx, dy, z11-z00), B = (0, dy, z01-z00)
+
+    dz_c = z01 - z00
+
+    # Cross product
+    # |i    j    k   |
+    # |dx   dy   dz_b|
+    # |0    dy   dz_c|
+    # = i(dy*dz_c - dz_b*dy) - j(dx*dz_c - dz_b*0) + k(dx*dy - dy*0)
+    # = (dy*(dz_c - dz_b), -dx*dz_c, dx*dy)
+
+    cross2_x = dy * (dz_c - dz_b)
+    cross2_y = -dx * dz_c
+    cross2_z = dx * dy
+    mag2 = np.sqrt(cross2_x**2 + cross2_y**2 + cross2_z**2)
+
+    # Her hücrenin alanı = 0.5 * (|cross1| + |cross2|)
+    cell_areas = 0.5 * (mag1 + mag2)
+
+    # Geçersiz hücreleri sıfırla
+    cell_areas = np.where(cell_valid, cell_areas, 0.0)
+
+    # Toplam yüzey alanı
+    surface_area = float(cell_areas.sum(dtype=np.float64))
+
+    # Düzlemsel alan (geçerli hücreler için)
+    planar_cell_area = dx * dy
+    valid_cell_count = int(cell_valid.sum())
+    planar_area = valid_cell_count * planar_cell_area
+
+    # Oran
+    if planar_area > 0:
+        surface_ratio = surface_area / planar_area
+    else:
+        surface_ratio = 1.0
+
+    return SurfaceAreaResult(
+        surface_area_m2=surface_area,
+        planar_area_m2=planar_area,
+        surface_ratio=surface_ratio,
+        rows=rows,
+        cols=cols,
+        dx=dx,
+        dy=dy,
+        valid_cells=valid_cells,
+        nodata_cells=nodata_cells,
+    )
+
+
 # =============================================================================
 # YARDIMCI FONKSİYONLAR
 # =============================================================================

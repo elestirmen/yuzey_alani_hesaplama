@@ -76,7 +76,12 @@ from pathlib import Path
 from typing import NoReturn
 
 from surface_area.io import write_dem_float32_geotiff
-from surface_area.synthetic import SYNTHETIC_PRESETS, generate_synthetic_dsm
+from surface_area.synthetic import (
+    SYNTHETIC_PRESETS,
+    generate_synthetic_dsm,
+    compute_reference_surface_area,
+    SurfaceAreaResult,
+)
 
 
 # =============================================================================
@@ -141,19 +146,19 @@ class SynthConfig:
     """
 
     out: str = field(
-        default="out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}.tif",
-        metadata={"help": "Çıktı GeoTIFF yolu ({preset}, {rows}, {cols}, {dx}, {seed} şablonları desteklenir)"},
+        default="out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}_{timestamp}.tif",
+        metadata={"help": "Çıktı GeoTIFF yolu ({preset}, {rows}, {cols}, {dx}, {seed}, {timestamp} şablonları desteklenir)"},
     )
     preset: str = field(
-        default="mountain",  # Varsayılan olarak gerçekçi dağlık arazi
+        default="mountain",   #"mountain",  # Varsayılan olarak gerçekçi dağlık arazi
         metadata={"help": f"Arazi tipi. Seçenekler: {', '.join(SYNTHETIC_PRESETS)}"},
     )
     rows: int = field(
-        default=2048,
+        default=4096,
         metadata={"help": f"Raster satır sayısı ({MIN_ROWS}-{MAX_ROWS})"},
     )
     cols: int = field(
-        default=2048,
+        default=4096,
         metadata={"help": f"Raster sütun sayısı ({MIN_COLS}-{MAX_COLS})"},
     )
     dx: float = field(
@@ -164,9 +169,9 @@ class SynthConfig:
         default=None,
         metadata={"help": "Y piksel boyutu metre (None ise dx kullanılır)"},
     )
-    seed: int = field(
-        default=0,
-        metadata={"help": "Rastgele sayı tohumu (tekrarlanabilirlik için)"},
+    seed: int | None = field(
+        default=None,  # None = her seferinde farklı rastgele seed
+        metadata={"help": "Rastgele sayı tohumu (None = her seferinde farklı, sabit değer = tekrarlanabilir)"},
     )
     relief: float = field(
         default=1.0,
@@ -361,7 +366,7 @@ def estimate_file_size(rows: int, cols: int) -> tuple[float, str]:
 def _format_out_path(out: Path, *, params: dict[str, object]) -> Path:
     """Çıktı yolundaki şablonları doldurur.
 
-    Desteklenen şablonlar: {preset}, {rows}, {cols}, {dx}, {dy}, {seed}
+    Desteklenen şablonlar: {preset}, {rows}, {cols}, {dx}, {dy}, {seed}, {timestamp}
 
     Args:
         out: Şablon içerebilen çıktı yolu
@@ -393,7 +398,7 @@ def _print_header() -> None:
     print()
 
 
-def _print_parameters(args: argparse.Namespace, dy: float, memory_str: str, file_size_str: str) -> None:
+def _print_parameters(args: argparse.Namespace, dy: float, memory_str: str, file_size_str: str, actual_seed: int) -> None:
     """Kullanılacak parametreleri yazdırır."""
     print("PARAMETRELER:")
     print("-" * 40)
@@ -401,7 +406,8 @@ def _print_parameters(args: argparse.Namespace, dy: float, memory_str: str, file
     print(f"  Boyut:                  {args.rows} x {args.cols} piksel")
     print(f"  Piksel boyutu:          dx={args.dx:g}m, dy={dy:g}m")
     print(f"  Gerçek boyut:           {args.rows * dy:.1f}m x {args.cols * args.dx:.1f}m")
-    print(f"  Seed:                   {args.seed}")
+    seed_info = f"{actual_seed}" + (" (rastgele)" if args.seed is None else " (kullanıcı belirli)")
+    print(f"  Seed:                   {seed_info}")
     print(f"  Relief çarpanı:         {args.relief}")
     print(f"  Roughness:              {args.roughness_m}m")
     print(f"  CRS:                    {args.crs}")
@@ -556,8 +562,8 @@ TEST PATTERNLERİ:
     p.add_argument(
         "--seed", "-s",
         type=int,
-        default=defaults.seed,
-        help=_help("seed"),
+        default=None,  # None = rastgele seed
+        help="Rastgele sayı tohumu. Belirtilmezse her seferinde farklı seed kullanılır. Aynı deseni tekrar üretmek için sabit bir değer verin.",
     )
 
     # Yüzey özellikleri
@@ -644,6 +650,14 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     # dy değerini belirle
     dy = float(args.dx if args.dy is None else args.dy)
 
+    # Seed değerini belirle (None ise rastgele üret)
+    import random
+    if args.seed is None:
+        # Rastgele seed üret (0 ile 2^31-1 arası)
+        actual_seed = random.randint(0, 2**31 - 1)
+    else:
+        actual_seed = int(args.seed)
+
     # =========================================================================
     # PARAMETRE DOĞRULAMA (Kodun başında)
     # =========================================================================
@@ -686,12 +700,16 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     # PARAMETRE BİLGİLERİNİ GÖSTER
     # =========================================================================
     if not quiet:
-        _print_parameters(args, dy, memory_str, file_size_str)
+        _print_parameters(args, dy, memory_str, file_size_str, actual_seed)
         _print_preset_info(args.preset)
 
     # =========================================================================
     # ÇIKTI YOLUNU HAZIRLA
     # =========================================================================
+    # Zaman damgası oluştur (her çalıştırmada farklı dosya adı için)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     try:
         out: Path = _format_out_path(
             args.out,
@@ -701,7 +719,8 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
                 "cols": int(args.cols),
                 "dx": float(args.dx),
                 "dy": dy,
-                "seed": int(args.seed),
+                "seed": actual_seed,
+                "timestamp": timestamp,
             },
         )
     except ValueError as e:
@@ -725,7 +744,7 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
             dx=float(args.dx),
             dy=None if args.dy is None else float(args.dy),
             preset=str(args.preset),
-            seed=int(args.seed),
+            seed=actual_seed,
             relief=float(args.relief),
             roughness_m=float(args.roughness_m),
             nodata_value=float(args.nodata) if args.nodata is not None else None,
@@ -738,6 +757,26 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
 
     if not quiet:
         print(f"✓ DSM üretildi: min={z.min():.2f}m, max={z.max():.2f}m, mean={z.mean():.2f}m\n")
+
+    # =========================================================================
+    # REFERANS YÜZEY ALANI HESAPLAMA (BENCHMARK İÇİN)
+    # =========================================================================
+    if not quiet:
+        print("Referans yüzey alanı hesaplanıyor (benchmark için)...")
+
+    try:
+        ref_area: SurfaceAreaResult = compute_reference_surface_area(
+            z,
+            dx=float(args.dx),
+            dy=dy,
+            nodata_value=float(args.nodata) if args.nodata is not None else None,
+        )
+    except Exception as e:
+        print(f"⚠️  Yüzey alanı hesaplama hatası: {e}")
+        ref_area = None
+
+    if ref_area is not None and not quiet:
+        print(f"✓ Referans yüzey alanı hesaplandı.\n")
 
     # =========================================================================
     # GEOTIFF YAZIMI
@@ -772,16 +811,108 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     print(f"Dosya: {out}")
     print(f"  Boyut: {info.width} x {info.height} piksel")
     print(f"  Piksel: dx={info.dx:g}m, dy={info.dy:g}m")
-    print(f"  Preset: {args.preset}, Seed: {args.seed}")
+    print(f"  Preset: {args.preset}, Seed: {actual_seed}")
 
     if not quiet:
         actual_size_mb = out.stat().st_size / (1024 * 1024)
         print(f"  Dosya boyutu: {actual_size_mb:.1f} MB")
+
+    # =========================================================================
+    # REFERANS YÜZEY ALANI BİLGİSİ (BENCHMARK)
+    # =========================================================================
+    if ref_area is not None:
+        print()
+        print("=" * 60)
+        print("REFERANS YÜZEY ALANI (Benchmark için Ground Truth)")
+        print("=" * 60)
+        print(f"  Düzlemsel Alan (2D):     {ref_area.planar_area_m2:,.2f} m²")
+        print(f"                           {ref_area.planar_area_ha:,.4f} ha")
+        print(f"                           {ref_area.planar_area_km2:,.6f} km²")
+        print()
+        print(f"  Gerçek Yüzey Alanı (3D): {ref_area.surface_area_m2:,.2f} m²")
+        print(f"                           {ref_area.surface_area_ha:,.4f} ha")
+        print(f"                           {ref_area.surface_area_km2:,.6f} km²")
+        print()
+        print(f"  Yüzey/Düzlem Oranı:      {ref_area.surface_ratio:.6f}")
+        print(f"  Artış Yüzdesi:           {(ref_area.surface_ratio - 1.0) * 100:.4f}%")
+
+        if ref_area.nodata_cells > 0:
+            print()
+            print(f"  Geçerli hücreler:        {ref_area.valid_cells:,}")
+            print(f"  Nodata hücreler:         {ref_area.nodata_cells:,}")
+
+        print()
+        print("-" * 60)
+        print("Bu değerleri kendi yöntemlerinizle karşılaştırabilirsiniz.")
+        print("Yöntemlerinizin doğruluğu = Hesaplanan / Referans")
+
+        # JSON formatında da çıktı ver (programatik kullanım için)
+        json_file = out.with_suffix(".reference.json")
+        _write_reference_json(json_file, args, ref_area, out, actual_seed)
+        print(f"\nJSON formatında kaydedildi: {json_file}")
+
+    if not quiet:
         print()
         print("Bu dosyayı yüzey alanı hesaplama ile test etmek için:")
         print(f'  python main.py "{out}"')
 
     return 0
+
+
+def _write_reference_json(
+    json_path: Path,
+    args: argparse.Namespace,
+    ref_area: SurfaceAreaResult,
+    tif_path: Path,
+    actual_seed: int,
+) -> None:
+    """Referans yüzey alanı bilgisini JSON olarak kaydeder."""
+    import json
+    from datetime import datetime
+
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "tif_file": str(tif_path.resolve()),
+        "parameters": {
+            "preset": args.preset,
+            "rows": args.rows,
+            "cols": args.cols,
+            "dx": args.dx,
+            "dy": args.dy if args.dy is not None else args.dx,
+            "seed": actual_seed,
+            "relief": args.relief,
+            "roughness_m": args.roughness_m,
+            "crs": args.crs,
+            "nodata": args.nodata,
+            "nodata_holes": args.nodata_holes,
+        },
+        "reference_surface_area": {
+            "planar_area_m2": ref_area.planar_area_m2,
+            "planar_area_ha": ref_area.planar_area_ha,
+            "planar_area_km2": ref_area.planar_area_km2,
+            "surface_area_m2": ref_area.surface_area_m2,
+            "surface_area_ha": ref_area.surface_area_ha,
+            "surface_area_km2": ref_area.surface_area_km2,
+            "surface_ratio": ref_area.surface_ratio,
+            "increase_percent": (ref_area.surface_ratio - 1.0) * 100,
+        },
+        "grid_info": {
+            "rows": ref_area.rows,
+            "cols": ref_area.cols,
+            "dx": ref_area.dx,
+            "dy": ref_area.dy,
+            "valid_cells": ref_area.valid_cells,
+            "nodata_cells": ref_area.nodata_cells,
+        },
+        "description": (
+            "Bu dosya, sentetik DSM'nin GERÇEK (referans) yüzey alanını içerir. "
+            "Bu değer, yüzey alanı hesaplama yöntemlerinin doğruluğunu test etmek için "
+            "ground truth olarak kullanılabilir."
+        ),
+    }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 # =============================================================================
