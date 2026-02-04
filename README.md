@@ -122,11 +122,14 @@ python main.py --help
 | `pandas` | Veri çerçevesi işlemleri, CSV export | 2.0.0 |
 | `matplotlib` | Grafik oluşturma | 3.7.0 |
 | `pytest` | Test çerçevesi (geliştirme) | 7.0.0 |
+| `shapely` | ROI/polygon kesişimleri (parcel alanları) | 2.0.0 |
 
 **Manuel kurulum (requirements.txt olmadan):**
 ```bash
-pip install numpy rasterio scipy pandas matplotlib pytest
+pip install numpy rasterio scipy pandas matplotlib pytest shapely
 ```
+
+> **Not (ROI Shapefile):** Shapefile/OGR formatları için `geopandas` veya `fiona` gerekir. GeoJSON için yalnızca `shapely` yeterlidir.
 
 ### Kurulum Sorun Giderme
 
@@ -256,8 +259,19 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 | `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
 | `--jenness_weight` | `float` | `0.25` | Jenness yöntemi ağırlık katsayısı |
 | `--integral_N` | `int` | `5` | Bilinear integral alt bölme sayısı |
+| `--adaptive_rel_tol` | `float` | `1e-4` | Adaptive bilinear bağıl tolerans |
+| `--adaptive_abs_tol` | `float` | `0.0` | Adaptive bilinear mutlak tolerans |
+| `--adaptive_max_level` | `int` | `5` | Adaptive bilinear maksimum inceltme seviyesi |
+| `--adaptive_min_N` | `int` | `2` | Adaptive bilinear başlangıç N |
+| `--adaptive_roughness_fastpath` | `bool` | Açık | Düz/planar patch fast-path |
+| `--adaptive_roughness_threshold` | `float` | Otomatik | Fast-path eşiği (opsiyonel) |
 | `--sigma_mode` | `str` | `mult` | Multiscale sigma yorumlama modu |
 | `--sigma_m` | `list[float]` | `2.0, 5.0` | Multiscale sigma değerleri |
+| `--roi` | `str` | - | ROI polygon yolu (GeoJSON veya Shapefile) |
+| `--roi_id_field` | `str` | Otomatik | ROI id alanı |
+| `--roi_mode` | `str` | `mask` | ROI modu: `mask` veya `fraction` |
+| `--roi_all_touched` | `flag` | Kapalı | `mask` modunda all_touched rasterize |
+| `--roi_only` | `flag` | Kapalı | Sadece ROI çıktısını üret |
 | `--plots` | `flag` | Kapalı | PNG grafik üretimini etkinleştirir |
 | `--keep_resampled` | `flag` | Kapalı | Resample edilmiş GeoTIFF'leri saklar |
 | `--reference_csv` | `str` | - | Karşılaştırma için referans CSV dosyası |
@@ -297,6 +311,7 @@ Kullanılabilir yöntemler:
 | `tin_2tri_cell` | Her hücre 2 üçgen olarak modellenir | ⚡⚡ Hızlı | Yüksek |
 | `jenness_window_8tri` | 3x3 pencerede 8 üçgen | ⚡⚡ Hızlı | Çok yüksek |
 | `bilinear_patch_integral` | Bilinear yüzey integrasyonu | ⚡ Yavaş | En yüksek |
+| `adaptive_bilinear_patch_integral` | Bilinear integral (adaptif inceltme) | ⚡ Yavaş | En yüksek |
 | `multiscale_decomposed_area` | Çok ölçekli ayrıştırma | ⚡ Yavaş | Özel |
 
 ```bash
@@ -394,6 +409,24 @@ Gradient/eğim hesaplaması için kullanılan kernel:
 
 ---
 
+#### Adaptive Bilinear Parametreleri (`adaptive_bilinear_patch_integral`)
+
+`adaptive_bilinear_patch_integral`, `bilinear_patch_integral` ile aynı bilinear patch modelini kullanır; ancak her hücre için alt-bölme sayısını (N) tolerans kontrollü olarak artırır.
+
+- `--adaptive_rel_tol` (varsayılan: `1e-4`): Bağıl tolerans
+- `--adaptive_abs_tol` (varsayılan: `0.0`): Mutlak tolerans
+- `--adaptive_max_level` (varsayılan: `5`): Maksimum inceltme seviyesi (N -> 2N -> 4N ...)
+- `--adaptive_min_N` (varsayılan: `2`): Başlangıç alt-bölme sayısı
+- `--adaptive_roughness_fastpath/--no-adaptive_roughness_fastpath` (varsayılan: açık): Düz/planar hücrelerde hızlı yol
+- `--adaptive_roughness_threshold` (varsayılan: otomatik): Hızlı-yol eşiği (opsiyonel)
+
+Örnek:
+```bash
+--methods adaptive_bilinear_patch_integral --adaptive_rel_tol 1e-4 --adaptive_max_level 5 --adaptive_min_N 2
+```
+
+---
+
 #### `--sigma_mode` ve `--sigma_m` (Multiscale Parametreleri)
 
 `multiscale_decomposed_area` yöntemi için Gaussian filtre ayarları.
@@ -450,6 +483,32 @@ Bu flag etkinleştirildiğinde, her GSD için oluşturulan resample edilmiş Geo
 ```
 
 > **⚠️ Dikkat:** Çok sayıda GSD değeri için bu seçenek disk alanını önemli ölçüde kullanabilir.
+
+---
+
+#### `--roi` (ROI / Parcel Bazlı Alanlar)
+
+İsteğe bağlı olarak polygon ROI (GeoJSON veya Shapefile) verip her ROI için A2D/A3D hesaplayabilirsiniz.
+
+> **CRS Notu:** GeoJSON dosyalarında CRS belirtilmezse EPSG:4326 (lon/lat) varsayılır. ROI geometrileri DEM CRS'ine dönüştürülerek hesaplanır.
+
+- `--roi <path>`: GeoJSON veya Shapefile yolu
+- `--roi_id_field <field>`: ROI id alanı (varsayılan: `id` varsa `id`, yoksa ilk alan)
+- `--roi_mode mask|fraction`:
+  - `mask`: Hızlı. Piksel merkezi ROI içindeyse 1, değilse 0 kabul edilir (opsiyonel `--roi_all_touched`).
+  - `fraction`: Daha hassas. Sınır piksellerinde piksel-poligon kesişim alanı ile kesir hesaplanır.
+- `--roi_all_touched/--no-roi_all_touched`: `mask` modunda rasterize davranışı
+- `--roi_only/--no-roi_only`: Sadece ROI çıktısını yaz (global `results_long.csv` üretme)
+
+Örnek (mask):
+```bash
+python -m surface_area run --dem dem.tif --outdir out --gsd 1 --methods gradient_multiplier --roi parcels.geojson --roi_mode mask
+```
+
+Örnek (fraction):
+```bash
+python -m surface_area run --dem dem.tif --outdir out --gsd 1 --methods adaptive_bilinear_patch_integral --roi parcels.geojson --roi_mode fraction
+```
 
 ---
 
@@ -567,7 +626,27 @@ z(u,v) = (1-u)(1-v)×z00 + u(1-v)×z10 + (1-u)v×z01 + uv×z11
 
 ---
 
-### 5. Multiscale Decomposed Area (`multiscale_decomposed_area`)
+### 5. Adaptive Bilinear Patch Integral (`adaptive_bilinear_patch_integral`)
+
+`bilinear_patch_integral` yönteminin tolerans kontrollü adaptif sürümüdür.
+
+- Her hücrede N önce `--adaptive_min_N` ile başlar.
+- N ikiye katlanarak artırılır (N → 2N → 4N ...).
+- Ardışık iki seviye arasındaki fark tolerans altına düşünce durur ve son (fine) seviye alanı döner.
+
+**Ne zaman kullanılır?**
+- Düz alanlar: düşük seviye, hızlı.
+- Engebeli alanlar: daha fazla inceltme, daha yüksek doğruluk.
+
+**Ek çıktı kolonları (results_long.csv sonunda):**
+- `adaptive_avg_level`
+- `adaptive_max_level_used`
+- `adaptive_refined_cell_fraction`
+- `adaptive_total_subcells_evaluated`
+
+---
+
+### 6. Multiscale Decomposed Area (`multiscale_decomposed_area`)
 
 **Gaussian alçak geçiren filtre** ile yüzey alanını **topoğrafik** ve **mikro-pürüzlülük** bileşenlerine ayırır.
 
@@ -611,6 +690,15 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `runtime_sec` | float | Hesaplama süresi (saniye, IO hariç) |
 | `note` | str | Parametre özeti |
 
+**Adaptive bilinear için ek kolonlar (CSV sonunda):**
+
+| Kolon | Tip | Açıklama |
+|-------|-----|----------|
+| `adaptive_avg_level` | float | Ortalama adaptif seviye |
+| `adaptive_max_level_used` | int | Kullanılan maksimum seviye |
+| `adaptive_refined_cell_fraction` | float | Seviye > 1 olan hücre oranı |
+| `adaptive_total_subcells_evaluated` | int | Toplam değerlendirilen alt-hücre sayısı |
+
 **Multiscale için ek kolonlar:**
 
 | Kolon | Tip | Açıklama |
@@ -622,6 +710,19 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 
 #### `results_wide.csv`
 Satır = GSD, Sütunlar = `{method}_{metric}` formatında pivot tablo.
+
+#### `results_roi_long.csv` (ROI verilirse)
+Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
+
+| Kolon | Tip | Açıklama |
+|-------|-----|----------|
+| `gsd_m` | float | Hedef GSD |
+| `roi_id` | str | ROI/parsel kimliği |
+| `method` | str | Yöntem |
+| `A2D`, `A3D`, `ratio` | float | ROI bazlı alanlar ve oran |
+| `valid_cells` | int | ROI ile kesişen geçerli hücre sayısı |
+| `runtime_sec` | float | Yaklaşık hesaplama süresi |
+| `note` | str | ROI modu ve notlar |
 
 ### Metadata
 
