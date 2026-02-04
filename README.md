@@ -38,11 +38,12 @@ Bu proje, Sayısal Yükseklik Modeli (DEM) veya Sayısal Yüzey Modeli (DSM) Geo
 
 | Özellik | Açıklama |
 |---------|----------|
-| **Çoklu Yöntem Desteği** | 5 farklı yüzey alanı hesaplama algoritması |
+| **Çoklu Yöntem Desteği** | 6 farklı yüzey alanı hesaplama algoritması |
 | **Çoklu Çözünürlük Analizi** | Farklı GSD (Ground Sample Distance) değerlerinde yeniden örnekleme |
 | **Büyük Dosya Desteği** | `rasterio.block_windows` ile bellek-etkin blok işleme |
 | **Multiscale Analiz** | Gaussian alçak geçiren filtre ile topoğrafik/mikro alan ayrıştırması |
 | **Zengin Çıktılar** | CSV (long + wide format), JSON metadata ve PNG grafikler |
+| **ROI / Parsel Desteği** | GeoJSON/Shapefile ROI ile maskeleme veya kesirli (fraction) hücre ağırlığı |
 | **Nodata Yönetimi** | Otomatik nodata maskeleme ve kenar hücre kontrolü |
 
 ---
@@ -218,19 +219,52 @@ python main.py run \
 
 ### Sentetik DSM (Metot Kıyaslama)
 
-Farklı yüzey şekilleri + girinti/çıkıntılar + pürüzlülük içeren sentetik bir DSM üretip metotları kıyaslayabilirsiniz:
+Yöntemleri gerçek DEM'lere geçmeden önce **kontrollü** yüzeyler üzerinde doğrulamak/kıyaslamak için sentetik DSM/DEM üretebilirsiniz.
+İki üretim yolu vardır:
+
+1) **Hızlı üretim (CLI):** `python -m surface_area synth ...` sadece GeoTIFF üretir.  
+2) **Benchmark / ground truth:** `generate_synthetic_tif.py` GeoTIFF + **native çözünürlükte** referans (ground truth) A2D/A3D hesaplar ve `.reference.json` üretir.
+
+#### 1) Hızlı üretim: `surface_area synth`
 
 ```bash
-# 1) Sentetik DSM üret
+# 1) Sentetik DSM üret (patchwork = farklı desenlerin karışımı)
 python -m surface_area synth --out synthetic_patchwork.tif --preset patchwork --rows 512 --cols 512 --dx 1 --seed 0 --nodata_holes 5
 
 # 2) Metotları çalıştır
-python -m surface_area run --dem synthetic_patchwork.tif --outdir out_synth --gsd 1 2 5 10 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral --plots
+python -m surface_area run --dem synthetic_patchwork.tif --outdir out_synth --gsd 1 2 5 10 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral multiscale_decomposed_area --plots
 ```
 
-Preset seçenekleri: `plane`, `waves`, `crater_field`, `terraced`, `patchwork`, `mixed`.
+#### 2) Preset'ler
 
-> Not: Aynı komutları `python main.py synth ...` şeklinde de kullanabilirsiniz.
+**Test patternleri (analitik/doğrulama için):** `plane`, `waves`, `crater_field`, `terraced`, `patchwork`, `mixed`  
+**Gerçekçi arazi tipleri (saha benzeri testler için):** `mountain`, `valley`, `hills`, `coastal`, `plateau`, `canyon`, `volcanic`, `glacial`, `karst`, `alluvial`
+
+#### 3) Önemli parametreler
+
+| Parametre | Açıklama |
+|----------|----------|
+| `--dx`, `--dy` | Piksel boyutu (metre). Daha küçük değer = daha fazla detay + daha büyük dosya/bellek. |
+| `--relief` | Makro rölyef çarpanı (yamaçları/zirveleri büyütür). |
+| `--roughness_m` | Mikro pürüzlülük genliği (metre). Mikro-topografya etkisini artırır. |
+| `--seed` | Tekrarlanabilirlik için sabit seed. |
+| `--nodata_holes`, `--nodata_radius_m` | Nodata delikleri oluşturarak nodata/kenar davranışını test eder. |
+
+#### 4) Ground truth (referans alan): `generate_synthetic_tif.py`
+
+`generate_synthetic_tif.py`, aynı sentetik yüzeyi üretip **native çözünürlükte** referans A2D/A3D değerlerini hesaplar ve GeoTIFF'in yanına `.reference.json` yazar.
+`--out` parametresi `{preset}`, `{rows}`, `{cols}`, `{dx}`, `{seed}`, `{timestamp}` gibi şablonları da destekler.
+
+```bash
+# Sentetik DSM + referans alan (ground truth)
+python generate_synthetic_tif.py --out out_synth/synth_mountain_dx1_seed42.tif --preset mountain --rows 2048 --cols 2048 --dx 1 --seed 42 --nodata_holes 20
+
+# Referans: out_synth/synth_mountain_dx1_seed42.reference.json
+# Kıyas (örnek): gsd=1 ile çalıştırıp results_long.csv içindeki A3D'yi JSON'daki surface_area_m2 ile karşılaştırın.
+python -m surface_area run --dem out_synth/synth_mountain_dx1_seed42.tif --outdir out_synth_run --gsd 1 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral --plots
+```
+
+> Not: Aynı komutları `python main.py synth ...` / `python main.py run ...` şeklinde de kullanabilirsiniz.
 
 ### Yöntem 3: VS Code ile Çalıştırma
 
@@ -813,16 +847,22 @@ yuzey_alani_hesaplama/
 │   ├── methods.py       # Yüzey alanı algoritmaları
 │   ├── multiscale.py    # Multiscale ayrıştırma
 │   ├── plotting.py      # Grafik fonksiyonları
+│   ├── progress.py      # İlerleme / log çıktısı
+│   ├── roi.py           # ROI (GeoJSON/Shapefile) işlemleri
 │   └── synthetic.py     # Sentetik test yüzeyleri
 ├── tests/
 │   ├── conftest.py      # Test konfigürasyonu
-│   └── test_synthetic.py # Birim testleri
+│   ├── test_synthetic.py # Sentetik yüzey doğruluk testleri
+│   ├── test_cli_synth.py # CLI synth testleri
+│   ├── test_generate_synthetic_tif_script.py # Script + referans JSON testleri
+│   └── test_adaptive_and_roi.py # Adaptive + ROI testleri
 ├── .githooks/
 │   └── pre-commit       # Git hook'ları
 ├── .vscode/
 │   ├── launch.json      # Debug konfigürasyonu
 │   └── tasks.json       # Task tanımları
 ├── .gitignore
+├── generate_synthetic_tif.py  # Sentetik DSM üretimi (+ referans alan)
 ├── main.py              # Ana çalıştırma dosyası
 ├── requirements.txt     # Bağımlılıklar
 └── README.md            # Bu dosya
@@ -850,7 +890,12 @@ pytest --cov=surface_area --cov-report=html
 
 ### Test Kapsamı
 
-`test_synthetic.py` sentetik yüzeyler üzerinde yöntemlerin doğruluğunu test eder:
+- `tests/test_synthetic.py`: sentetik (analitik) yüzeyler üzerinde yöntemlerin doğruluğunu test eder.
+- `tests/test_cli_synth.py`: `python -m surface_area synth` komutunun ürettiği GeoTIFF/metadata kontrolleri.
+- `tests/test_generate_synthetic_tif_script.py`: `generate_synthetic_tif.py` script'inin GeoTIFF + `.reference.json` üretimi.
+- `tests/test_adaptive_and_roi.py`: adaptif integral diagnostikleri ve ROI (mask/fraction) akışı.
+
+`tests/test_synthetic.py` içinde kullanılan bazı yüzeyler:
 
 | Yüzey | Açıklama | Tolerans |
 |-------|----------|----------|
@@ -877,9 +922,12 @@ pytest --cov=surface_area --cov-report=html
 ## Sürüm Geçmişi
 
 ### v0.1.0 - İlk Sürüm
-- 5 yüzey alanı hesaplama yöntemi
+- 6 yüzey alanı hesaplama yöntemi
 - Multiscale ayrıştırma
 - CLI arayüzü
+- Sentetik DSM üretimi (test patternleri + gerçekçi arazi preset'leri)
+- `generate_synthetic_tif.py` ile referans (ground truth) alan çıktısı
+- ROI (GeoJSON/Shapefile) desteği
 - CSV/JSON/PNG çıktıları
 
 ---
