@@ -1,212 +1,333 @@
-# DEM 3D Yüzey Alanı Hesaplama Aracı
+<p align="center">
+  <img src="https://img.icons8.com/fluency/96/mountain.png" alt="DEM 3D Surface" width="80"/>
+</p>
 
-> DEM/DSM GeoTIFF verilerinden 3D yüzey alanı (A3D) hesaplama için kapsamlı Python kütüphanesi
+<h1 align="center">DEM 3D Yüzey Alanı Hesaplama Aracı</h1>
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-Open%20Source-green.svg)](#lisans)
+<p align="center">
+  <strong>DEM/DSM GeoTIFF verilerinden 3D yüzey alanı (A3D) hesaplama için kapsamlı Python kütüphanesi</strong>
+</p>
 
----
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
+  <a href="#lisans"><img src="https://img.shields.io/badge/Lisans-Açık%20Kaynak-28A745?style=for-the-badge" alt="License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=for-the-badge" alt="Platform"></a>
+</p>
 
-## İçindekiler
-
-- [Genel Bakış](#genel-bakış)
-- [Kurulum](#kurulum)
-  - [Gereksinimler](#gereksinimler)
-  - [Adım Adım Kurulum](#adım-adım-kurulum)
-  - [Bağımlılıklar](#bağımlılıklar)
-  - [Kurulum Sorun Giderme](#kurulum-sorun-giderme)
-- [Hızlı Başlangıç](#hızlı-başlangıç)
-- [Kullanım](#kullanım)
-- [Parametreler](#parametreler)
-  - [Zorunlu Parametreler](#zorunlu-parametreler)
-  - [İsteğe Bağlı Parametreler](#isteğe-bağlı-parametreler)
-  - [Parametre Detayları](#parametre-detayları)
-- [Yöntemler](#yöntemler)
-- [Çıktılar](#çıktılar)
-- [Teknik Detaylar](#teknik-detaylar)
-- [Testler](#testler)
-- [Performans İpuçları](#performans-ipuçları)
-- [Kaynaklar](#kaynaklar)
+<p align="center">
+  <a href="#-hızlı-başlangıç">Hızlı Başlangıç</a> •
+  <a href="#-özellikler">Özellikler</a> •
+  <a href="#-kurulum">Kurulum</a> •
+  <a href="#-kullanım">Kullanım</a> •
+  <a href="#-yöntemler">Yöntemler</a> •
+  <a href="#-çıktılar">Çıktılar</a>
+</p>
 
 ---
 
-## Genel Bakış
+## 📋 İçindekiler
 
-Bu proje, Sayısal Yükseklik Modeli (DEM) veya Sayısal Yüzey Modeli (DSM) GeoTIFF raster verilerini kullanarak **3 boyutlu yüzey alanı (A3D)** hesaplamalarını gerçekleştirir.
-
-### Temel Özellikler
-
-| Özellik | Açıklama |
-|---------|----------|
-| **Çoklu Yöntem Desteği** | 6 farklı yüzey alanı hesaplama algoritması |
-| **Çoklu Çözünürlük Analizi** | Farklı GSD (Ground Sample Distance) değerlerinde yeniden örnekleme |
-| **Büyük Dosya Desteği** | `rasterio.block_windows` ile bellek-etkin blok işleme |
-| **Multiscale Analiz** | Gaussian alçak geçiren filtre ile topoğrafik/mikro alan ayrıştırması |
-| **Zengin Çıktılar** | CSV (long + wide format), JSON metadata ve PNG grafikler |
-| **ROI / Parsel Desteği** | GeoJSON/Shapefile ROI ile maskeleme veya kesirli (fraction) hücre ağırlığı |
-| **Nodata Yönetimi** | Otomatik nodata maskeleme ve kenar hücre kontrolü |
+- [🚀 Hızlı Başlangıç](#-hızlı-başlangıç)
+- [✨ Özellikler](#-özellikler)
+- [� İş Akışı](#-iş-akışı)
+- [📦 Kurulum](#-kurulum)
+- [💻 Kullanım](#-kullanım)
+- [⚙️ Parametreler](#️-parametreler)
+- [🔬 Yöntemler](#-yöntemler)
+- [📊 Çıktılar](#-çıktılar)
+- [🧪 Testler](#-testler)
+- [⚡ Performans İpuçları](#-performans-ipuçları)
+- [📚 Kaynaklar](#-kaynaklar)
 
 ---
 
-## Kurulum
+## 🚀 Hızlı Başlangıç
+
+```bash
+# 1. Klonla ve kur
+git clone <repo-url>
+cd yuzey_alani_hesaplama
+pip install -r requirements.txt
+
+# 2. Çalıştır
+python main.py run --dem dem_dosyam.tif --outdir sonuclar
+```
+
+<details>
+<summary>💡 <strong>Detaylı örnek komutlar</strong></summary>
+
+```bash
+# Çoklu GSD ve yöntemlerle analiz
+python main.py run \
+  --dem dag_dsm.tif \
+  --outdir out \
+  --gsd 0.5 1 2 5 10 \
+  --methods gradient_multiplier tin_2tri_cell jenness_window_8tri \
+  --plots
+
+# Sentetik DSM ile test
+python -m surface_area synth --out test.tif --preset mountain --rows 512 --cols 512
+python -m surface_area run --dem test.tif --outdir out_test --gsd 1 2 5 --plots
+```
+
+</details>
+
+---
+
+## ✨ Özellikler
+
+<table>
+<tr>
+<td width="50%">
+
+### 🎯 Hesaplama
+- **6 farklı algoritma** ile yüzey alanı hesaplama
+- **Çoklu çözünürlük analizi** (GSD desteği)
+- **Multiscale ayrıştırma** (topo + mikro)
+- **ROI/Parsel desteği** (GeoJSON/Shapefile)
+
+</td>
+<td width="50%">
+
+### 📈 Çıktılar
+- **CSV** formatında sonuçlar (long + wide)
+- **JSON** metadata ve run bilgisi
+- **PNG** grafikler (A3D vs GSD, ratio vb.)
+- **Ground truth** referans değerler
+
+</td>
+</tr>
+<tr>
+<td>
+
+### ⚡ Performans
+- **Blok işleme** ile büyük dosya desteği
+- **Bellek-etkin** raster işleme
+- **Nodata yönetimi** ve kenar kontrolü
+
+</td>
+<td>
+
+### 🛠️ Sentetik DSM
+- **16 farklı preset** (10 gerçekçi arazi + 6 test pattern)
+- **fBm noise** tabanlı gerçekçi arazi üretimi
+- **Erozyon simülasyonu** (hidrolik + termal)
+- **Ground truth** referans alan hesaplama
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🔄 İş Akışı
+
+```mermaid
+flowchart TB
+    subgraph INPUT["📥 Girdi"]
+        DEM[("🗺️ DEM/DSM<br/>GeoTIFF")]
+        SYNTH["🏔️ Sentetik DSM<br/>(Opsiyonel)"]
+        ROI["📍 ROI<br/>GeoJSON/Shapefile"]
+    end
+
+    subgraph PROCESS["⚙️ İşleme"]
+        direction TB
+        RESAMPLE["📐 Yeniden Örnekleme<br/>(Hedef GSD)"]
+        METHODS["🔬 Yöntemler"]
+        
+        subgraph METHODS_DETAIL["Hesaplama Yöntemleri"]
+            M1["Gradient Multiplier"]
+            M2["TIN 2-Triangle"]
+            M3["Jenness 8-Triangle"]
+            M4["Bilinear Integral"]
+            M5["Adaptive Bilinear"]
+            M6["Multiscale Decomposed"]
+        end
+    end
+
+    subgraph OUTPUT["📤 Çıktı"]
+        CSV["📊 CSV<br/>results_long.csv<br/>results_wide.csv"]
+        JSON["📋 JSON<br/>run_info.json"]
+        PLOTS["📈 PNG<br/>A3D vs GSD grafikleri"]
+        ROI_OUT["📍 ROI Sonuçları<br/>results_roi_long.csv"]
+    end
+
+    DEM --> RESAMPLE
+    SYNTH -.-> DEM
+    RESAMPLE --> METHODS
+    METHODS --> METHODS_DETAIL
+    ROI -.-> METHODS
+    
+    METHODS_DETAIL --> CSV
+    METHODS_DETAIL --> JSON
+    METHODS_DETAIL --> PLOTS
+    ROI --> ROI_OUT
+
+    style INPUT fill:#e1f5fe
+    style PROCESS fill:#fff3e0
+    style OUTPUT fill:#e8f5e9
+    style METHODS_DETAIL fill:#fce4ec
+```
+
+### Sentetik DSM Üretim Akışı
+
+```mermaid
+flowchart LR
+    subgraph PRESETS["🎨 Preset Seçimi"]
+        direction TB
+        REAL["🏔️ Gerçekçi Arazi<br/>mountain, valley, hills<br/>coastal, plateau, canyon<br/>volcanic, glacial, karst, alluvial"]
+        TEST["🔬 Test Pattern<br/>plane, waves, crater_field<br/>terraced, patchwork, mixed"]
+    end
+
+    subgraph GENERATION["⚙️ Üretim"]
+        direction TB
+        FBM["fBm Noise"]
+        RIDGE["Ridge Noise"]
+        EROSION["Erozyon Sim."]
+        BUMPS["Gaussian Bumps"]
+    end
+
+    subgraph OUTPUTS["📤 Çıktı"]
+        TIFF["🗺️ GeoTIFF"]
+        REF["📊 .reference.json<br/>(Ground Truth)"]
+    end
+
+    PRESETS --> GENERATION
+    GENERATION --> OUTPUTS
+
+    style PRESETS fill:#e3f2fd
+    style GENERATION fill:#fff8e1
+    style OUTPUTS fill:#e8f5e9
+```
+
+---
+
+## 📦 Kurulum
 
 ### Gereksinimler
 
 | Gereksinim | Minimum | Önerilen |
-|------------|---------|----------|
-| **Python** | 3.10 | 3.12 |
-| **RAM** | 4 GB | 8+ GB (büyük DEM'ler için) |
-| **Disk** | 100 MB | Veri boyutuna bağlı |
-| **İşletim Sistemi** | Windows 10, Linux (Ubuntu 20.04+), macOS 11+ | - |
+|:----------:|:-------:|:--------:|
+| 🐍 **Python** | 3.10 | 3.12 |
+| 💾 **RAM** | 4 GB | 8+ GB |
+| 💿 **Disk** | 100 MB | Veri boyutuna bağlı |
+| 🖥️ **OS** | Win 10, Ubuntu 20.04+, macOS 11+ | - |
 
 ### Adım Adım Kurulum
 
-#### 1. Repository'yi Klonlayın
+#### 1️⃣ Repository'yi Klonlayın
 
 ```bash
 git clone <repo-url>
 cd yuzey_alani_hesaplama
 ```
 
-#### 2. Sanal Ortam Oluşturun (Önerilir)
+#### 2️⃣ Sanal Ortam Oluşturun
 
-**Windows (PowerShell):**
+<details>
+<summary>🪟 <strong>Windows (PowerShell)</strong></summary>
+
 ```powershell
-# Sanal ortam oluştur
 python -m venv .venv
-
-# Sanal ortamı etkinleştir
 .venv\Scripts\Activate.ps1
 
-# Not: ExecutionPolicy hatası alırsanız önce şunu çalıştırın:
+# ExecutionPolicy hatası için:
 # Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-**Windows (CMD):**
+</details>
+
+<details>
+<summary>🪟 <strong>Windows (CMD)</strong></summary>
+
 ```cmd
 python -m venv .venv
 .venv\Scripts\activate.bat
 ```
 
-**Linux / macOS:**
+</details>
+
+<details>
+<summary>🐧 <strong>Linux / macOS</strong></summary>
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-#### 3. Bağımlılıkları Yükleyin
+</details>
+
+#### 3️⃣ Bağımlılıkları Yükleyin
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### 4. Kurulumu Doğrulayın
+#### 4️⃣ Kurulumu Doğrulayın
 
 ```bash
-# Versiyon kontrolü
 python -c "import surface_area; print(f'surface_area v{surface_area.__version__}')"
-
-# Yardım mesajını görüntüle
 python main.py --help
 ```
 
 ### Bağımlılıklar
 
-`requirements.txt` dosyasında tanımlı ana bağımlılıklar:
+| Paket | Amaç |
+|:-----:|:-----|
+| `numpy` | Sayısal hesaplamalar |
+| `rasterio` | GeoTIFF I/O |
+| `scipy` | Gaussian filtre, erozyon simülasyonu |
+| `pandas` | CSV export |
+| `matplotlib` | Grafikler |
+| `shapely` | ROI işlemleri |
+| `pytest` | Test (geliştirme) |
 
-| Paket | Amaç | Minimum Versiyon |
-|-------|------|------------------|
-| `numpy` | Sayısal hesaplamalar, array işlemleri | 1.24.0 |
-| `rasterio` | GeoTIFF okuma/yazma, CRS işlemleri | 1.3.0 |
-| `scipy` | Gaussian filtre, bilimsel hesaplamalar | 1.10.0 |
-| `pandas` | Veri çerçevesi işlemleri, CSV export | 2.0.0 |
-| `matplotlib` | Grafik oluşturma | 3.7.0 |
-| `pytest` | Test çerçevesi (geliştirme) | 7.0.0 |
-| `shapely` | ROI/polygon kesişimleri (parcel alanları) | 2.0.0 |
+<details>
+<summary>🔴 <strong>Kurulum Sorun Giderme</strong></summary>
 
-**Manuel kurulum (requirements.txt olmadan):**
-```bash
-pip install numpy rasterio scipy pandas matplotlib pytest shapely
-```
-
-> **Not (ROI Shapefile):** Shapefile/OGR formatları için `geopandas` veya `fiona` gerekir. GeoJSON için yalnızca `shapely` yeterlidir.
-
-### Kurulum Sorun Giderme
-
-#### Windows'ta rasterio Kurulum Hatası
-
-Rasterio, GDAL kütüphanesine bağımlıdır. Windows'ta sorun yaşarsanız:
-
+**Windows'ta rasterio hatası:**
 ```powershell
-# Conda ile kurulum (önerilir)
 conda install -c conda-forge rasterio
-
-# veya wheel dosyasından kurulum
+# veya
 pip install --find-links=https://github.com/cgohlke/geospatial-wheels/releases rasterio
 ```
 
-#### Permission Hatası (Linux/macOS)
-
+**Permission hatası (Linux/macOS):**
 ```bash
-# --user flag'i ile kur
 pip install --user -r requirements.txt
-
-# veya sudo ile (önerilmez)
-sudo pip install -r requirements.txt
 ```
 
-#### SSL/Network Hatası
-
+**SSL/Network hatası:**
 ```bash
-# Trusted host ekleyerek kur
 pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 ```
 
----
-
-## Hızlı Başlangıç
-
-En basit kullanım için:
-
-```bash
-# 1. DEM dosyanızı proje dizinine kopyalayın
-# 2. main.py içindeki DEFAULT_RUN_CONFIG'i düzenleyin
-# 3. Çalıştırın
-python main.py
-```
-
-Veya komut satırından doğrudan:
-
-```bash
-python main.py run --dem dem_dosyam.tif --outdir sonuclar
-```
+</details>
 
 ---
 
-## Kullanım
+## 💻 Kullanım
 
 ### Yöntem 1: IDE Üzerinden (Önerilen)
 
-`main.py` dosyasındaki `DEFAULT_RUN_CONFIG` alanını düzenleyerek parametreleri tek bir yerden yönetebilirsiniz:
+`main.py` içindeki `DEFAULT_RUN_CONFIG` alanını düzenleyin:
 
 ```python
 DEFAULT_RUN_CONFIG = RunConfig(
-    dem="vadi_dsm.tif",           # Girdi DEM dosyası
-    outdir="out_vadi",            # Çıktı klasörü
-    gsd=[0.5, 1, 2, 5, 10],       # Hedef çözünürlükler
-    methods=["gradient_multiplier"],  # Kullanılacak yöntemler
-    plots=True,                   # Grafik üret
+    dem="vadi_dsm.tif",
+    outdir="out_vadi",
+    gsd=[0.5, 1, 2, 5, 10],
+    methods=["gradient_multiplier"],
+    plots=True,
 )
 ```
-
-Ardından:
 
 ```bash
 python main.py
 ```
 
-### Yöntem 2: Komut Satırı Argümanları
+### Yöntem 2: Komut Satırı
 
 ```bash
 python main.py run \
@@ -217,735 +338,357 @@ python main.py run \
   --plots
 ```
 
-### Sentetik DSM (Metot Kıyaslama)
+### Sentetik DSM Üretimi
 
-Yöntemleri gerçek DEM'lere geçmeden önce **kontrollü** yüzeyler üzerinde doğrulamak/kıyaslamak için sentetik DSM/DEM üretebilirsiniz.
-İki üretim yolu vardır:
+#### 🗺️ Preset'ler
 
-1) **Hızlı üretim (CLI):** `python -m surface_area synth ...` sadece GeoTIFF üretir.  
-2) **Benchmark / ground truth:** `generate_synthetic_tif.py` GeoTIFF + **native çözünürlükte** referans (ground truth) A2D/A3D hesaplar ve `.reference.json` üretir.
+| Kategori | Preset'ler | Açıklama |
+|:--------:|:----------|:---------|
+| **Gerçekçi Arazi** | `mountain` | Dağlık arazi (fBm + sırtlar) |
+| | `valley` | Vadi ve akarsu yatakları |
+| | `hills` | Yumuşak tepeler (rolling hills) |
+| | `coastal` | Kıyı şeridi (deniz-kara geçişi) |
+| | `plateau` | Yüksek plato ve yamaçlar |
+| | `canyon` | Kanyon/boğaz yapıları |
+| | `volcanic` | Volkanik arazi (kraterler) |
+| | `glacial` | Buzul vadisi (U-şekilli) |
+| | `karst` | Karstik arazi (düdenler) |
+| | `alluvial` | Alüvyal ova/delta |
+| **Test Pattern** | `plane` | Düz eğimli yüzey |
+| | `waves` | Sinüzoidal dalgalar |
+| | `crater_field` | Krater alanı |
+| | `terraced` | Teraslı arazi |
+| | `patchwork` | Karışık yüzeyler |
+| | `mixed` | Maksimum çeşitlilik |
 
-#### 1) Hızlı üretim: `surface_area synth`
+#### Hızlı Üretim
 
 ```bash
-# 1) Sentetik DSM üret (patchwork = farklı desenlerin karışımı)
-python -m surface_area synth --out synthetic_patchwork.tif --preset patchwork --rows 512 --cols 512 --dx 1 --seed 0 --nodata_holes 5
-
-# 2) Metotları çalıştır
-python -m surface_area run --dem synthetic_patchwork.tif --outdir out_synth --gsd 1 2 5 10 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral multiscale_decomposed_area --plots
+python -m surface_area synth \
+  --out synthetic.tif \
+  --preset mountain \
+  --rows 1024 --cols 1024 \
+  --dx 1 --seed 42
 ```
 
-#### 2) Preset'ler
+#### Ground Truth (Referans Alan)
 
-**Test patternleri (analitik/doğrulama için):** `plane`, `waves`, `crater_field`, `terraced`, `patchwork`, `mixed`  
-**Gerçekçi arazi tipleri (saha benzeri testler için):** `mountain`, `valley`, `hills`, `coastal`, `plateau`, `canyon`, `volcanic`, `glacial`, `karst`, `alluvial`
+```bash
+python generate_synthetic_tif.py \
+  --out synth_mountain.tif \
+  --preset mountain \
+  --rows 2048 --cols 2048 \
+  --dx 1 --seed 42
 
-#### 3) Önemli parametreler
+# Çıktı: synth_mountain.reference.json
+# İçerik: surface_area_m2, planar_area_m2, surface_ratio
+```
+
+#### Önemli Parametreler
 
 | Parametre | Açıklama |
-|----------|----------|
-| `--dx`, `--dy` | Piksel boyutu (metre). Daha küçük değer = daha fazla detay + daha büyük dosya/bellek. |
-| `--relief` | Makro rölyef çarpanı (yamaçları/zirveleri büyütür). |
-| `--roughness_m` | Mikro pürüzlülük genliği (metre). Mikro-topografya etkisini artırır. |
-| `--seed` | Tekrarlanabilirlik için sabit seed. |
-| `--nodata_holes`, `--nodata_radius_m` | Nodata delikleri oluşturarak nodata/kenar davranışını test eder. |
-
-#### 4) Ground truth (referans alan): `generate_synthetic_tif.py`
-
-`generate_synthetic_tif.py`, aynı sentetik yüzeyi üretip **native çözünürlükte** referans A2D/A3D değerlerini hesaplar ve GeoTIFF'in yanına `.reference.json` yazar.
-`--out` parametresi `{preset}`, `{rows}`, `{cols}`, `{dx}`, `{seed}`, `{timestamp}` gibi şablonları da destekler.
-
-```bash
-# Sentetik DSM + referans alan (ground truth)
-python generate_synthetic_tif.py --out out_synth/synth_mountain_dx1_seed42.tif --preset mountain --rows 2048 --cols 2048 --dx 1 --seed 42 --nodata_holes 20
-
-# Referans: out_synth/synth_mountain_dx1_seed42.reference.json
-# Kıyas (örnek): gsd=1 ile çalıştırıp results_long.csv içindeki A3D'yi JSON'daki surface_area_m2 ile karşılaştırın.
-python -m surface_area run --dem out_synth/synth_mountain_dx1_seed42.tif --outdir out_synth_run --gsd 1 --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral --plots
-```
-
-> Not: Aynı komutları `python main.py synth ...` / `python main.py run ...` şeklinde de kullanabilirsiniz.
-
-### Yöntem 3: VS Code ile Çalıştırma
-
-Bu repoda hazır **VS Code** çalıştırma ayarları bulunur:
-
-1. `Run and Debug (Ctrl+Shift+D)` → **SurfaceArea: main.py** seçin
-2. Python interpreter olarak `.venv` seçin (`Ctrl+Shift+P` → `Python: Select Interpreter`)
-3. `F5` ile çalıştırın
-
-Bağımlılıkları kurmak için: `Terminal → Run Task…` → **SurfaceArea: install deps (venv)**
-
-### Yardım Mesajı
-
-```bash
-python main.py --help
-```
+|:---------:|:---------|
+| `--dx`, `--dy` | Piksel boyutu (metre) |
+| `--relief` | Makro rölyef çarpanı |
+| `--roughness_m` | Mikro pürüzlülük genliği |
+| `--seed` | Tekrarlanabilirlik için sabit seed |
+| `--nodata_holes` | Nodata delikleri sayısı |
 
 ---
 
-## Parametreler
+## ⚙️ Parametreler
 
 ### Zorunlu Parametreler
 
-| Parametre | Kısa | Tip | Açıklama |
-|-----------|------|-----|----------|
-| `--dem` | - | `str` | Girdi DEM/DSM GeoTIFF dosya yolu. Mutlak veya göreli yol olabilir. |
-| `--outdir` | - | `str` | Çıktı dizini. Mevcut değilse otomatik oluşturulur. |
-
-**Örnek:**
-```bash
-python main.py run --dem C:\data\dem.tif --outdir C:\results
-```
+| Parametre | Tip | Açıklama |
+|:---------:|:---:|:---------|
+| `--dem` | `str` | Girdi DEM/DSM GeoTIFF dosya yolu |
+| `--outdir` | `str` | Çıktı dizini |
 
 ### İsteğe Bağlı Parametreler
 
-| Parametre | Tip | Varsayılan | Açıklama |
-|-----------|-----|------------|----------|
-| `--gsd` | `list[float]` | `0.1, 0.5, 1, 2, 5, 10, 20, 50` | Hedef GSD (Ground Sample Distance) değerleri metre cinsinden |
-| `--methods` | `list[str]` | Tümü | Çalıştırılacak hesaplama yöntemleri |
-| `--resampling` | `str` | `bilinear` | Yeniden örnekleme algoritması |
-| `--nodata` | `float` | Otomatik | Nodata değeri (dataset'te tanımlı değilse) |
-| `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
-| `--jenness_weight` | `float` | `0.25` | Jenness yöntemi ağırlık katsayısı |
-| `--integral_N` | `int` | `5` | Bilinear integral alt bölme sayısı |
-| `--adaptive_rel_tol` | `float` | `1e-4` | Adaptive bilinear bağıl tolerans |
-| `--adaptive_abs_tol` | `float` | `0.0` | Adaptive bilinear mutlak tolerans |
-| `--adaptive_max_level` | `int` | `5` | Adaptive bilinear maksimum inceltme seviyesi |
-| `--adaptive_min_N` | `int` | `2` | Adaptive bilinear başlangıç N |
-| `--adaptive_roughness_fastpath` | `bool` | Açık | Düz/planar patch fast-path |
-| `--adaptive_roughness_threshold` | `float` | Otomatik | Fast-path eşiği (opsiyonel) |
-| `--sigma_mode` | `str` | `mult` | Multiscale sigma yorumlama modu |
-| `--sigma_m` | `list[float]` | `2.0, 5.0` | Multiscale sigma değerleri |
-| `--roi` | `str` | - | ROI polygon yolu (GeoJSON veya Shapefile) |
-| `--roi_id_field` | `str` | Otomatik | ROI id alanı |
-| `--roi_mode` | `str` | `mask` | ROI modu: `mask` veya `fraction` |
-| `--roi_all_touched` | `flag` | Kapalı | `mask` modunda all_touched rasterize |
-| `--roi_only` | `flag` | Kapalı | Sadece ROI çıktısını üret |
-| `--plots` | `flag` | Kapalı | PNG grafik üretimini etkinleştirir |
-| `--keep_resampled` | `flag` | Kapalı | Resample edilmiş GeoTIFF'leri saklar |
-| `--reference_csv` | `str` | - | Karşılaştırma için referans CSV dosyası |
+<details>
+<summary>📏 <strong>GSD (Ground Sample Distance)</strong></summary>
 
-### Parametre Detayları
-
-#### `--gsd` (Ground Sample Distance)
-
-Hedef çözünürlük değerlerini metre cinsinden belirler. Analiz, her GSD değeri için ayrı ayrı çalıştırılır.
-
-| Değer | Açıklama | Kullanım Senaryosu |
-|-------|----------|-------------------|
-| `< 1` | Alt-metre çözünürlük | Mikro-topografya, detaylı yüzey analizi |
-| `1-5` | Yüksek çözünürlük | Standart DEM analizi |
-| `5-20` | Orta çözünürlük | Bölgesel analiz, hızlı sonuç |
-| `> 20` | Düşük çözünürlük | Geniş alan analizi, trend görme |
+| Değer | Kullanım |
+|:-----:|:---------|
+| `< 1` | Mikro-topografya, detaylı analiz |
+| `1-5` | Standart DEM analizi |
+| `5-20` | Bölgesel analiz |
+| `> 20` | Geniş alan, trend görme |
 
 ```bash
-# Çoklu GSD değeri (boşlukla ayrılmış)
 --gsd 0.5 1 2 5 10
-
-# Tek değer
---gsd 1
 ```
 
-> **⚠️ Dikkat:** Kaynak DEM'in çözünürlüğünden küçük GSD değerleri upsample yapar ve dosya boyutunu önemli ölçüde artırabilir.
+> ⚠️ Kaynak DEM'den küçük GSD değerleri upsample yapar.
 
----
+</details>
 
-#### `--methods` (Hesaplama Yöntemleri)
-
-Kullanılabilir yöntemler:
-
-| Yöntem | Açıklama | Hız | Doğruluk |
-|--------|----------|-----|----------|
-| `gradient_multiplier` | Gradient tabanlı alan çarpanı | ⚡⚡⚡ Çok hızlı | Yüksek |
-| `tin_2tri_cell` | Her hücre 2 üçgen olarak modellenir | ⚡⚡ Hızlı | Yüksek |
-| `jenness_window_8tri` | 3x3 pencerede 8 üçgen | ⚡⚡ Hızlı | Çok yüksek |
-| `bilinear_patch_integral` | Bilinear yüzey integrasyonu | ⚡ Yavaş | En yüksek |
-| `adaptive_bilinear_patch_integral` | Bilinear integral (adaptif inceltme) | ⚡ Yavaş | En yüksek |
-| `multiscale_decomposed_area` | Çok ölçekli ayrıştırma | ⚡ Yavaş | Özel |
-
-```bash
-# Tek yöntem
---methods gradient_multiplier
-
-# Çoklu yöntem
---methods gradient_multiplier tin_2tri_cell jenness_window_8tri
-
-# Tüm yöntemler (belirtilmezse varsayılan)
-# (--methods parametresini kullanmayın)
-```
-
----
-
-#### `--resampling` (Yeniden Örnekleme)
-
-DEM'i farklı çözünürlüklere dönüştürürken kullanılan interpolasyon yöntemi:
-
-| Değer | Açıklama | Önerilen Kullanım |
-|-------|----------|-------------------|
-| `bilinear` | Bilinear interpolasyon (4 komşu) | **Varsayılan**, çoğu durum için ideal |
-| `nearest` | En yakın komşu (interpolasyon yok) | Kategorik veriler, tam değer koruma |
-| `cubic` | Kübik konvolüsyon (16 komşu) | Yumuşak geçişler, görsel kalite |
-
-```bash
---resampling bilinear
---resampling nearest
---resampling cubic
-```
-
----
-
-#### `--slope_method` (Eğim Hesaplama Kerneli)
-
-Gradient/eğim hesaplaması için kullanılan kernel:
-
-| Değer | Tam Adı | Stencil | Açıklama |
-|-------|---------|---------|----------|
-| `horn` | Horn (1981) | 3x3 (8 komşu) | Ağırlıklı ortalama, gürültüye dayanıklı |
-| `zt` | Zevenbergen-Thorne (1987) | Cross (4 komşu) | Basit fark, daha hızlı |
-
-**Horn Kernel Formülü:**
-```
-∂z/∂x = [(NE + 2E + SE) - (NW + 2W + SW)] / (8×dx)
-∂z/∂y = [(SW + 2S + SE) - (NW + 2N + NE)] / (8×dy)
-```
-
-**Zevenbergen-Thorne Formülü:**
-```
-∂z/∂x = (E - W) / (2×dx)
-∂z/∂y = (S - N) / (2×dy)
-```
-
-```bash
---slope_method horn   # Varsayılan, önerilen
---slope_method zt     # Daha hızlı alternatif
-```
-
----
-
-#### `--jenness_weight` (Jenness Ağırlık Katsayısı)
-
-`jenness_window_8tri` yöntemi için üçgen alanlarının toplama katsayısı.
+<details>
+<summary>🔄 <strong>Resampling</strong></summary>
 
 | Değer | Açıklama |
-|-------|----------|
-| `0.25` | **Varsayılan** - Her üçgenin 1/4'ü merkez hücreye atanır |
-| `0.125` | Daha konservatif hesaplama |
-| `0.5` | Daha agresif hesaplama |
+|:-----:|:---------|
+| `bilinear` | **Varsayılan**, çoğu durum için ideal |
+| `nearest` | Kategorik veriler |
+| `cubic` | Yumuşak geçişler |
+
+</details>
+
+<details>
+<summary>📐 <strong>Slope Method</strong></summary>
+
+| Kernel | Açıklama |
+|:------:|:---------|
+| `horn` | 3x3 ağırlıklı ortalama, gürültüye dayanıklı |
+| `zt` | 4 komşu basit fark, daha hızlı |
+
+</details>
+
+<details>
+<summary>🎯 <strong>ROI (Region of Interest)</strong></summary>
 
 ```bash
---jenness_weight 0.25
+# Mask modu (hızlı)
+--roi parcels.geojson --roi_mode mask
+
+# Fraction modu (hassas)
+--roi parcels.geojson --roi_mode fraction
 ```
 
-> **Not:** Literatürde yaygın olarak 0.25 değeri kullanılır (Jenness, 2004).
+</details>
 
 ---
 
-#### `--integral_N` (Bilinear Alt Bölme)
+## 🔬 Yöntemler
 
-`bilinear_patch_integral` yöntemi için her hücrenin kaç alt hücreye bölüneceğini belirler.
+### Karşılaştırma Tablosu
 
-| Değer | Alt Hücre | Üçgen Sayısı | Performans |
-|-------|-----------|--------------|------------|
-| `1` | 1×1 = 1 | 2 | Çok hızlı, düşük doğruluk |
-| `5` | 5×5 = 25 | 50 | **Varsayılan**, dengeli |
-| `10` | 10×10 = 100 | 200 | Yüksek doğruluk, yavaş |
-| `20` | 20×20 = 400 | 800 | Çok yüksek doğruluk, çok yavaş |
+| Yöntem | Hız | Doğruluk | Açıklama |
+|:-------|:---:|:--------:|:---------|
+| `gradient_multiplier` | ⚡⚡⚡ | Yüksek | Gradient tabanlı alan çarpanı |
+| `tin_2tri_cell` | ⚡⚡ | Yüksek | Her hücre 2 üçgen |
+| `jenness_window_8tri` | ⚡⚡ | Çok yüksek | 3x3 pencerede 8 üçgen |
+| `bilinear_patch_integral` | ⚡ | En yüksek | Bilinear yüzey integrasyonu |
+| `adaptive_bilinear_patch_integral` | ⚡ | En yüksek | Adaptif bilinear integral |
+| `multiscale_decomposed_area` | ⚡ | Özel | Topo + mikro ayrıştırma |
 
-```bash
---integral_N 5   # Varsayılan
---integral_N 10  # Daha hassas
-```
+### Yöntem Detayları
 
----
+<details>
+<summary>📐 <strong>1. Jenness Window 8-Triangle</strong></summary>
 
-#### Adaptive Bilinear Parametreleri (`adaptive_bilinear_patch_integral`)
-
-`adaptive_bilinear_patch_integral`, `bilinear_patch_integral` ile aynı bilinear patch modelini kullanır; ancak her hücre için alt-bölme sayısını (N) tolerans kontrollü olarak artırır.
-
-- `--adaptive_rel_tol` (varsayılan: `1e-4`): Bağıl tolerans
-- `--adaptive_abs_tol` (varsayılan: `0.0`): Mutlak tolerans
-- `--adaptive_max_level` (varsayılan: `5`): Maksimum inceltme seviyesi (N -> 2N -> 4N ...)
-- `--adaptive_min_N` (varsayılan: `2`): Başlangıç alt-bölme sayısı
-- `--adaptive_roughness_fastpath/--no-adaptive_roughness_fastpath` (varsayılan: açık): Düz/planar hücrelerde hızlı yol
-- `--adaptive_roughness_threshold` (varsayılan: otomatik): Hızlı-yol eşiği (opsiyonel)
-
-Örnek:
-```bash
---methods adaptive_bilinear_patch_integral --adaptive_rel_tol 1e-4 --adaptive_max_level 5 --adaptive_min_N 2
-```
-
----
-
-#### `--sigma_mode` ve `--sigma_m` (Multiscale Parametreleri)
-
-`multiscale_decomposed_area` yöntemi için Gaussian filtre ayarları.
-
-**`--sigma_mode`:** Sigma değerlerinin nasıl yorumlanacağı
-
-| Değer | Açıklama | Örnek |
-|-------|----------|-------|
-| `mult` | GSD çarpanı olarak | σ = 2 × GSD (GSD=5m ise σ=10m) |
-| `m` | Mutlak metre olarak | σ = 2m (sabit) |
-
-**`--sigma_m`:** Sigma değerleri listesi
-
-```bash
-# GSD'nin 2 ve 5 katı sigma değerleri
---sigma_mode mult --sigma_m 2 5
-
-# Sabit 10 ve 25 metre sigma
---sigma_mode m --sigma_m 10 25
-```
-
-**Sigma değeri ne anlama gelir?**
-
-| Sigma | Etki |
-|-------|------|
-| Küçük (1-3) | Daha az düzleştirme, mikro detaylar korunur |
-| Orta (3-10) | Dengeli ayrıştırma |
-| Büyük (10+) | Güçlü düzleştirme, sadece makro topografya kalır |
-
----
-
-#### `--plots` (Grafik Üretimi)
-
-Bu flag etkinleştirildiğinde PNG formatında grafikler üretilir:
-
-| Grafik | Açıklama |
-|--------|----------|
-| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log ölçek) |
-| `ratio_vs_GSD.png` | A3D/A2D oranı vs GSD |
-| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (sadece multiscale) |
-
-```bash
---plots  # Grafik üretimini etkinleştir
-```
-
----
-
-#### `--keep_resampled` (Ara Dosyaları Sakla)
-
-Bu flag etkinleştirildiğinde, her GSD için oluşturulan resample edilmiş GeoTIFF dosyaları saklanır.
-
-```bash
---keep_resampled  # Ara dosyaları sil
-```
-
-> **⚠️ Dikkat:** Çok sayıda GSD değeri için bu seçenek disk alanını önemli ölçüde kullanabilir.
-
----
-
-#### `--roi` (ROI / Parcel Bazlı Alanlar)
-
-İsteğe bağlı olarak polygon ROI (GeoJSON veya Shapefile) verip her ROI için A2D/A3D hesaplayabilirsiniz.
-
-> **CRS Notu:** GeoJSON dosyalarında CRS belirtilmezse EPSG:4326 (lon/lat) varsayılır. ROI geometrileri DEM CRS'ine dönüştürülerek hesaplanır.
-
-- `--roi <path>`: GeoJSON veya Shapefile yolu
-- `--roi_id_field <field>`: ROI id alanı (varsayılan: `id` varsa `id`, yoksa ilk alan)
-- `--roi_mode mask|fraction`:
-  - `mask`: Hızlı. Piksel merkezi ROI içindeyse 1, değilse 0 kabul edilir (opsiyonel `--roi_all_touched`).
-  - `fraction`: Daha hassas. Sınır piksellerinde piksel-poligon kesişim alanı ile kesir hesaplanır.
-- `--roi_all_touched/--no-roi_all_touched`: `mask` modunda rasterize davranışı
-- `--roi_only/--no-roi_only`: Sadece ROI çıktısını yaz (global `results_long.csv` üretme)
-
-Örnek (mask):
-```bash
-python -m surface_area run --dem dem.tif --outdir out --gsd 1 --methods gradient_multiplier --roi parcels.geojson --roi_mode mask
-```
-
-Örnek (fraction):
-```bash
-python -m surface_area run --dem dem.tif --outdir out --gsd 1 --methods adaptive_bilinear_patch_integral --roi parcels.geojson --roi_mode fraction
-```
-
----
-
-### Tam Örnek Komut
-
-```bash
-python main.py run ^
-  --dem dag_dsm.tif ^
-  --outdir out ^
-  --gsd 0.5 1 2 5 10 ^
-  --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral multiscale_decomposed_area ^
-  --resampling bilinear ^
-  --slope_method horn ^
-  --jenness_weight 0.25 ^
-  --integral_N 5 ^
-  --sigma_mode mult ^
-  --sigma_m 2 5 ^
-  --plots
-```
-
----
-
-## Yöntemler
-
-### 1. Jenness Window 8-Triangle (`jenness_window_8tri`)
-
-3x3 komşuluk penceresinde merkez hücre etrafında **8 üçgen** oluşturur. Her üçgenin alanı **Heron formülü** ile hesaplanır.
+3x3 komşuluk penceresinde merkez hücre etrafında **8 üçgen** oluşturur.
 
 ```
   NW --- N --- NE
    |  \  |  /  |
    |   \ | /   |
-  W ----[C]---- E    C = Merkez hücre
-   |   / | \   |     8 üçgen: C-N-NE, C-NE-E, C-E-SE, ...
+  W ----[C]---- E
+   |   / | \   |
    |  /  |  \  |
   SW --- S --- SE
 ```
 
-**Formül:**
-```
-A_cell = weight × Σ(Heron üçgen alanları)
-Heron: A = √[s(s-a)(s-b)(s-c)]  where s = (a+b+c)/2
-```
+**Formül:** `A_cell = weight × Σ(Heron üçgen alanları)`
 
-**Parametre:** `--jenness_weight` (varsayılan: 0.25)
+</details>
 
----
+<details>
+<summary>📐 <strong>2. TIN 2-Triangle Cell</strong></summary>
 
-### 2. TIN 2-Triangle Cell (`tin_2tri_cell`)
-
-Her hücreyi **köşe noktaları** ile tanımlanan **2 üçgen** olarak modeller. Köşe yükseklikleri, komşu 4 hücre merkezinin ortalamasından türetilir.
+Her hücreyi **2 üçgen** olarak modeller.
 
 ```
-  p00 -------- p10        Her hücre 2 üçgene bölünür:
-   |  \        |          △1: p00-p10-p11
-   |    \      |          △2: p00-p11-p01
-   |      \    |
+  p00 -------- p10
+   |  \        |
+   |    \      |    △1: p00-p10-p11
+   |      \    |    △2: p00-p11-p01
    |        \  |
   p01 -------- p11
 ```
 
-**Formül (Cross Product):**
-```
-A = 0.5 × |v1 × v2|
-```
+</details>
 
----
+<details>
+<summary>📐 <strong>3. Gradient Multiplier</strong></summary>
 
-### 3. Gradient Multiplier (`gradient_multiplier`)
-
-Yerel eğim gradyanlarını (∂z/∂x, ∂z/∂y) kullanarak **alan çarpanı** hesaplar.
-
-**Formül:**
 ```
 A_cell = dx × dy × √(1 + p² + q²)
-
 p = ∂z/∂x,  q = ∂z/∂y
 ```
 
-**Gradient Kernelleri:**
+</details>
 
-| Kernel | Açıklama | Stencil |
-|--------|----------|---------|
-| **Horn** | 8 komşu ağırlıklı ortalama | 3x3 (tüm komşular) |
-| **Zevenbergen-Thorne (ZT)** | 4 komşu basit fark | Cross (N,S,E,W) |
+<details>
+<summary>📐 <strong>4. Bilinear Patch Integral</strong></summary>
 
-**Horn Kernel:**
-```
-∂z/∂x = [(NE + 2E + SE) - (NW + 2W + SW)] / (8×dx)
-∂z/∂y = [(SW + 2S + SE) - (NW + 2N + NE)] / (8×dy)
-```
+Her hücreyi **bilinear yüzey** olarak modeller ve NxN alt bölme ile sayısal integrasyon yapar.
 
----
-
-### 4. Bilinear Patch Integral (`bilinear_patch_integral`)
-
-Her hücreyi **bilinear yüzey** olarak modeller ve **NxN alt bölme** ile sayısal integrasyon yapar.
-
-```
-  +-------+-------+
-  |       |       |     N=2 örneği:
-  |   △   |   △   |     4 alt hücre × 2 üçgen = 8 üçgen
-  +-------+-------+
-  |       |       |
-  |   △   |   △   |
-  +-------+-------+
-```
-
-**Bilinear İnterpolasyon:**
 ```
 z(u,v) = (1-u)(1-v)×z00 + u(1-v)×z10 + (1-u)v×z01 + uv×z11
 ```
 
-**Parametre:** `--integral_N` (varsayılan: 5, yani 5×5=25 alt hücre)
+</details>
 
----
+<details>
+<summary>📐 <strong>5. Adaptive Bilinear</strong></summary>
 
-### 5. Adaptive Bilinear Patch Integral (`adaptive_bilinear_patch_integral`)
+Tolerans kontrollü adaptif refinement:
+- Düz alanlar: düşük seviye, hızlı
+- Engebeli alanlar: daha fazla inceltme
 
-`bilinear_patch_integral` yönteminin tolerans kontrollü adaptif sürümüdür.
+</details>
 
-- Her hücrede N önce `--adaptive_min_N` ile başlar.
-- N ikiye katlanarak artırılır (N → 2N → 4N ...).
-- Ardışık iki seviye arasındaki fark tolerans altına düşünce durur ve son (fine) seviye alanı döner.
+<details>
+<summary>📐 <strong>6. Multiscale Decomposed</strong></summary>
 
-**Ne zaman kullanılır?**
-- Düz alanlar: düşük seviye, hızlı.
-- Engebeli alanlar: daha fazla inceltme, daha yüksek doğruluk.
-
-**Ek çıktı kolonları (results_long.csv sonunda):**
-- `adaptive_avg_level`
-- `adaptive_max_level_used`
-- `adaptive_refined_cell_fraction`
-- `adaptive_total_subcells_evaluated`
-
----
-
-### 6. Multiscale Decomposed Area (`multiscale_decomposed_area`)
-
-**Gaussian alçak geçiren filtre** ile yüzey alanını **topoğrafik** ve **mikro-pürüzlülük** bileşenlerine ayırır.
+**Gaussian filtre** ile topo + mikro ayrıştırma:
 
 ```
 A_total = A_topo + A_micro
-
-A_total : Toplam 3D yüzey alanı (gradient multiplier)
-A_topo  : Düzleştirilmiş (low-pass) yüzeyin alanı
-A_micro : Mikro-pürüzlülük katkısı
 ```
 
-**Düzleştirme:**
-- Nodata-aware **normalized convolution** kullanılır
-- `σ` (sigma) parametresi düzleştirme ölçeğini kontrol eder
-
-**Parametreler:**
-- `--sigma_mode mult`: Sigma = GSD × değer
-- `--sigma_mode m`: Sigma = mutlak metre değeri
-- `--sigma_m`: Sigma değerleri listesi
+</details>
 
 ---
 
-## Çıktılar
-
-`--outdir` altında oluşturulan dosyalar:
+## 📊 Çıktılar
 
 ### CSV Dosyaları
 
-#### `results_long.csv`
-Her satır bir (GSD, method) kombinasyonunu temsil eder.
+| Dosya | Açıklama |
+|:------|:---------|
+| `results_long.csv` | Her satır bir (GSD, method) kombinasyonu |
+| `results_wide.csv` | Pivot tablo formatı |
+| `results_roi_long.csv` | ROI bazlı sonuçlar |
 
-| Kolon | Tip | Açıklama |
-|-------|-----|----------|
-| `gsd_m` | float | Hedef GSD (metre) |
-| `dx`, `dy` | float | Gerçek piksel boyutları |
-| `method` | str | Hesaplama yöntemi |
-| `A2D` | float | Planimetrik alan (m²) = valid_cells × dx × dy |
-| `A3D` | float | 3D yüzey alanı (m²) |
-| `ratio` | float | Alan oranı = A3D / A2D |
-| `valid_cells` | int | Geçerli hücre sayısı |
-| `runtime_sec` | float | Hesaplama süresi (saniye, IO hariç) |
-| `note` | str | Parametre özeti |
-
-**Adaptive bilinear için ek kolonlar (CSV sonunda):**
-
-| Kolon | Tip | Açıklama |
-|-------|-----|----------|
-| `adaptive_avg_level` | float | Ortalama adaptif seviye |
-| `adaptive_max_level_used` | int | Kullanılan maksimum seviye |
-| `adaptive_refined_cell_fraction` | float | Seviye > 1 olan hücre oranı |
-| `adaptive_total_subcells_evaluated` | int | Toplam değerlendirilen alt-hücre sayısı |
-
-**Multiscale için ek kolonlar:**
-
-| Kolon | Tip | Açıklama |
-|-------|-----|----------|
-| `a_topo` | float | Topoğrafik alan bileşeni |
-| `a_micro` | float | Mikro-pürüzlülük bileşeni |
-| `micro_ratio` | float | A_micro / A_total |
-| `sigma_m` | float | Kullanılan sigma değeri (metre) |
-
-#### `results_wide.csv`
-Satır = GSD, Sütunlar = `{method}_{metric}` formatında pivot tablo.
-
-#### `results_roi_long.csv` (ROI verilirse)
-Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
-
-| Kolon | Tip | Açıklama |
-|-------|-----|----------|
-| `gsd_m` | float | Hedef GSD |
-| `roi_id` | str | ROI/parsel kimliği |
-| `method` | str | Yöntem |
-| `A2D`, `A3D`, `ratio` | float | ROI bazlı alanlar ve oran |
-| `valid_cells` | int | ROI ile kesişen geçerli hücre sayısı |
-| `runtime_sec` | float | Yaklaşık hesaplama süresi |
-| `note` | str | ROI modu ve notlar |
+**Kolonlar:** `gsd_m`, `dx`, `dy`, `method`, `A2D`, `A3D`, `ratio`, `valid_cells`, `runtime_sec`
 
 ### Metadata
 
-#### `run_info.json`
-```json
-{
-  "timestamp_utc": "2024-01-15T10:30:00+00:00",
-  "dem": "dag_dsm.tif",
-  "dem_info": {
-    "path": "dag_dsm.tif",
-    "crs": "EPSG:32636",
-    "width": 1000,
-    "height": 800,
-    "nodata": -9999.0,
-    "dx": 0.5,
-    "dy": 0.5
-  },
-  "versions": {
-    "python": "3.12.0",
-    "surface_area": "0.1.0",
-    "numpy": "1.26.0",
-    "rasterio": "1.3.9"
-  },
-  "params": { ... }
-}
-```
+**`run_info.json`** - DEM bilgisi, versiyon, parametreler
 
 ### Grafikler (`--plots`)
 
-| Dosya | Açıklama |
-|-------|----------|
-| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log ölçek) |
+| Grafik | Açıklama |
+|:-------|:---------|
+| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD |
 | `ratio_vs_GSD.png` | A3D/A2D oranı vs GSD |
-| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (multiscale) |
+| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD |
 
 ---
 
-## Teknik Detaylar
-
-### Nodata ve Kenar Yönetimi
-
-| Durum | Davranış |
-|-------|----------|
-| Nodata hücreler | Maskelenir, hesaplamaya dahil edilmez |
-| Stencil tabanlı yöntemler (Horn/ZT, Jenness) | Tam stencil valid değilse hücre atlanır |
-| Köşe tabanlı yöntemler (TIN, Bilinear) | 4 geçerli hücre merkezinden türetilmediğinde köşe atlanır |
-| Raster kenarları | Dış 1 hücre sınırı otomatik olarak dışlanır |
-
-### CRS ve Birim Uyarıları
-
-- Tüm hesaplamalar DEM'in CRS linear biriminde yapılır
-- CRS metre değilse CLI uyarı verir
-- Derece bazlı CRS'lerde GSD ve alan değerleri anlamsız olabilir
-
-### Bellek Yönetimi
-
-- Büyük rasterlar `rasterio.block_windows` ile blok-blok işlenir
-- Her blok için overlap (örtüşme) hesaplanır
-- Multiscale için overlap = `ceil(4 × max_sigma_px) + 1`
-
----
-
-## Proje Yapısı
+##  Proje Yapısı
 
 ```
 yuzey_alani_hesaplama/
-├── surface_area/
-│   ├── __init__.py      # Paket tanımı, versiyon
-│   ├── __main__.py      # Entry point
-│   ├── cli.py           # Komut satırı arayüzü
-│   ├── io.py            # Raster I/O işlemleri
-│   ├── methods.py       # Yüzey alanı algoritmaları
-│   ├── multiscale.py    # Multiscale ayrıştırma
-│   ├── plotting.py      # Grafik fonksiyonları
-│   ├── progress.py      # İlerleme / log çıktısı
-│   ├── roi.py           # ROI (GeoJSON/Shapefile) işlemleri
-│   └── synthetic.py     # Sentetik test yüzeyleri
-├── tests/
-│   ├── conftest.py      # Test konfigürasyonu
-│   ├── test_synthetic.py # Sentetik yüzey doğruluk testleri
-│   ├── test_cli_synth.py # CLI synth testleri
-│   ├── test_generate_synthetic_tif_script.py # Script + referans JSON testleri
-│   └── test_adaptive_and_roi.py # Adaptive + ROI testleri
-├── .githooks/
-│   └── pre-commit       # Git hook'ları
-├── .vscode/
-│   ├── launch.json      # Debug konfigürasyonu
-│   └── tasks.json       # Task tanımları
-├── .gitignore
-├── generate_synthetic_tif.py  # Sentetik DSM üretimi (+ referans alan)
-├── main.py              # Ana çalıştırma dosyası
-├── requirements.txt     # Bağımlılıklar
-└── README.md            # Bu dosya
+├── 📂 surface_area/
+│   ├── __init__.py          # Paket tanımı, v0.1.0
+│   ├── __main__.py           # Entry point
+│   ├── cli.py                # Komut satırı arayüzü
+│   ├── io.py                 # Raster I/O, blok işleme
+│   ├── methods.py            # 6 hesaplama algoritması
+│   ├── multiscale.py         # Gaussian ayrıştırma
+│   ├── plotting.py           # PNG grafik üretimi
+│   ├── progress.py           # İlerleme çubuğu
+│   ├── roi.py                # ROI mask/fraction
+│   └── synthetic.py          # Sentetik DSM üretimi
+│                             # (fBm, ridge, erozyon)
+├── 📂 tests/
+│   ├── conftest.py
+│   ├── test_synthetic.py
+│   ├── test_cli_synth.py
+│   ├── test_generate_synthetic_tif_script.py
+│   └── test_adaptive_and_roi.py
+├── generate_synthetic_tif.py  # Ground truth üretici
+├── main.py                    # Ana çalıştırma dosyası
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## Testler
-
-### Test Çalıştırma
+## 🧪 Testler
 
 ```bash
-# Tüm testleri çalıştır
+# Tüm testler
 pytest -q
 
 # Detaylı çıktı
 pytest -v
 
-# Belirli bir test
-pytest tests/test_synthetic.py::test_plane_all_methods_high_accuracy
-
 # Coverage raporu
 pytest --cov=surface_area --cov-report=html
 ```
 
-### Test Kapsamı
+### Test Yüzeyleri
 
-- `tests/test_synthetic.py`: sentetik (analitik) yüzeyler üzerinde yöntemlerin doğruluğunu test eder.
-- `tests/test_cli_synth.py`: `python -m surface_area synth` komutunun ürettiği GeoTIFF/metadata kontrolleri.
-- `tests/test_generate_synthetic_tif_script.py`: `generate_synthetic_tif.py` script'inin GeoTIFF + `.reference.json` üretimi.
-- `tests/test_adaptive_and_roi.py`: adaptif integral diagnostikleri ve ROI (mask/fraction) akışı.
-
-`tests/test_synthetic.py` içinde kullanılan bazı yüzeyler:
-
-| Yüzey | Açıklama | Tolerans |
-|-------|----------|----------|
-| **Plane** | z = ax + by + c | < 0.1% hata |
-| **Sinusoid** | z = A×sin(kx×x)×sin(ky×y) | < 5% hata |
-| **Paraboloid** | z = (x² + y²) / scale | < 5% hata |
-
-**Referans alan hesabı:** Yüksek çözünürlüklü (dx/10, dy/10) iki-üçgen integrasyon
+| Yüzey | Formül | Tolerans |
+|:------|:-------|:--------:|
+| Plane | z = ax + by + c | < 0.1% |
+| Sinusoid | z = A×sin(kx×x)×sin(ky×y) | < 5% |
+| Paraboloid | z = (x² + y²) / scale | < 5% |
 
 ---
 
-## Performans İpuçları
+## ⚡ Performans İpuçları
 
-| İpucu | Açıklama |
-|-------|----------|
-| **Büyük DEM'ler** | Önce daha kaba GSD'lerle (2-50m) test edin |
-| **Upsample dikkat** | Kaynak çözünürlükten daha küçük GSD çıktıyı çok büyütebilir |
-| **Multiscale** | `--sigma_mode mult` genellikle daha tutarlı sonuç verir |
-| **Bellek** | `--keep_resampled` kapalı tutun (varsayılan) |
-| **Hızlı sonuç** | Sadece `gradient_multiplier` kullanın (en hızlı yöntem) |
-
----
-
-## Sürüm Geçmişi
-
-### v0.1.0 - İlk Sürüm
-- 6 yüzey alanı hesaplama yöntemi
-- Multiscale ayrıştırma
-- CLI arayüzü
-- Sentetik DSM üretimi (test patternleri + gerçekçi arazi preset'leri)
-- `generate_synthetic_tif.py` ile referans (ground truth) alan çıktısı
-- ROI (GeoJSON/Shapefile) desteği
-- CSV/JSON/PNG çıktıları
+| 💡 İpucu | Açıklama |
+|:---------|:---------|
+| **Büyük DEM'ler** | Önce kaba GSD'lerle (2-50m) test edin |
+| **Hızlı sonuç** | Sadece `gradient_multiplier` kullanın |
+| **Bellek** | `--keep_resampled` kapalı tutun |
+| **Multiscale** | `--sigma_mode mult` daha tutarlı |
 
 ---
 
-## Lisans
+## 📜 Sürüm Geçmişi
+
+### v0.1.0
+
+- ✅ 6 yüzey alanı hesaplama yöntemi
+- ✅ 16 sentetik DSM preset'i (10 gerçekçi + 6 test)
+- ✅ fBm, ridge, turbulence noise üretici
+- ✅ Hidrolik ve termal erozyon simülasyonu
+- ✅ Ground truth referans alan hesaplama
+- ✅ ROI (GeoJSON/Shapefile) desteği
+- ✅ Multiscale ayrıştırma
+- ✅ CSV/JSON/PNG çıktıları
+
+---
+
+## 📚 Kaynaklar
+
+- Jenness, J. S. (2004). *Calculating landscape surface area from digital elevation models.* Wildlife Society Bulletin, 32(3), 829-839.
+- Horn, B. K. (1981). *Hill shading and the reflectance map.* Proceedings of the IEEE, 69(1), 14-47.
+- Zevenbergen, L. W., & Thorne, C. R. (1987). *Quantitative analysis of land surface topography.* Earth Surface Processes and Landforms, 12(1), 47-56.
+
+---
+
+## 📄 Lisans
 
 Bu proje açık kaynak olarak sunulmaktadır.
 
 ---
 
-## Kaynaklar
+## 🤝 Katkıda Bulunma
 
-- Jenness, J. S. (2004). Calculating landscape surface area from digital elevation models. *Wildlife Society Bulletin*, 32(3), 829-839.
-- Horn, B. K. (1981). Hill shading and the reflectance map. *Proceedings of the IEEE*, 69(1), 14-47.
-- Zevenbergen, L. W., & Thorne, C. R. (1987). Quantitative analysis of land surface topography. *Earth Surface Processes and Landforms*, 12(1), 47-56.
+1. 🍴 Fork edin
+2. 🌿 Branch oluşturun (`git checkout -b feature/yenilik`)
+3. 💾 Commit edin (`git commit -m 'Yeni özellik'`)
+4. 📤 Push edin (`git push origin feature/yenilik`)
+5. 🔃 Pull Request açın
 
 ---
 
-## Destek
+## 💬 Destek
 
-Sorularınız veya önerileriniz için issue açabilirsiniz.
+Sorularınız için issue açabilirsiniz.
+
+---
+
+<p align="center">
+  Made with ❤️ for GIS and Remote Sensing
+</p>
