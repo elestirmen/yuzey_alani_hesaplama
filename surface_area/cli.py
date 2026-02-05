@@ -545,6 +545,7 @@ def cmd_synth(args: argparse.Namespace) -> int:
     out: Path = args.out
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    progress = ProgressPrinter()
     z = generate_synthetic_dsm(
         rows=int(args.rows),
         cols=int(args.cols),
@@ -557,7 +558,9 @@ def cmd_synth(args: argparse.Namespace) -> int:
         nodata_value=float(args.nodata) if args.nodata is not None else None,
         nodata_holes=int(args.nodata_holes),
         nodata_radius_m=float(args.nodata_radius_m),
+        progress=progress,
     )
+    progress.finish()
 
     info = write_dem_float32_geotiff(
         path=out,

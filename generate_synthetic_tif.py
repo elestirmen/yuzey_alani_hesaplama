@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from surface_area.io import write_dem_float32_geotiff
+from surface_area.progress import ProgressPrinter
 from surface_area.synthetic import (
     SYNTHETIC_PRESETS,
     generate_synthetic_dsm,
@@ -154,11 +155,11 @@ class SynthConfig:
         metadata={"help": f"Arazi tipi. Seçenekler: {', '.join(SYNTHETIC_PRESETS)}"},
     )
     rows: int = field(
-        default=4096,
+        default=2048,
         metadata={"help": f"Raster satır sayısı ({MIN_ROWS}-{MAX_ROWS})"},
     )
     cols: int = field(
-        default=4096,
+        default=2048,
         metadata={"help": f"Raster sütun sayısı ({MIN_COLS}-{MAX_COLS})"},
     )
     dx: float = field(
@@ -737,6 +738,7 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         print(f"  Preset: {args.preset}")
         print(f"  Boyut: {args.rows} x {args.cols}")
 
+    progress = None if quiet else ProgressPrinter()
     try:
         z = generate_synthetic_dsm(
             rows=int(args.rows),
@@ -750,10 +752,13 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
             nodata_value=float(args.nodata) if args.nodata is not None else None,
             nodata_holes=int(args.nodata_holes),
             nodata_radius_m=float(args.nodata_radius_m),
+            progress=progress,
         )
     except Exception as e:
         print(f"❌ DSM üretim hatası: {e}")
         return 1
+    if progress is not None:
+        progress.finish()
 
     if not quiet:
         print(f"✓ DSM üretildi: min={z.min():.2f}m, max={z.max():.2f}m, mean={z.mean():.2f}m\n")

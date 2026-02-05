@@ -393,6 +393,8 @@ def _fractal_gaussian_noise(
     cols: int,
     sigmas_px: list[float],
     amps: list[float],
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "roughness",
 ) -> np.ndarray:
     """Fractal-ish noise: sum of Gaussian-smoothed white noise fields."""
     if rows <= 0 or cols <= 0:
@@ -408,11 +410,21 @@ def _fractal_gaussian_noise(
         raise RuntimeError("scipy is required for synthetic roughness generation") from e
 
     acc = np.zeros((rows, cols), dtype=np.float64)
+    layers: list[tuple[float, float]] = []
     for sigma, amp in zip(sigmas_px, amps, strict=True):
         s = float(sigma)
         a = float(amp)
         if s <= 0 or a == 0:
             continue
+        layers.append((s, a))
+
+    if not layers:
+        return acc
+
+    if progress is not None:
+        progress.update(label=progress_label, current=0, total=len(layers))
+
+    for i, (s, a) in enumerate(layers, start=1):
         white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
         sm = gaussian_filter(white, sigma=s, mode="reflect")
         sm = sm - float(sm.mean(dtype=np.float64))
@@ -420,6 +432,8 @@ def _fractal_gaussian_noise(
         if std > 0:
             sm = sm / std
         acc += a * sm
+        if progress is not None:
+            progress.update(label=progress_label, current=i, total=len(layers))
     return acc
 
 
@@ -432,6 +446,8 @@ def _add_gaussian_bumps(
     count: int,
     amp_range: tuple[float, float],
     sigma_m_range: tuple[float, float],
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "bumps",
 ) -> np.ndarray:
     """Rastgele Gaussian çıkıntılar/çukurlar ekler."""
     if count <= 0:
@@ -454,7 +470,11 @@ def _add_gaussian_bumps(
     if s0 <= 0 or s1 <= 0:
         raise ValueError("sigma_m_range must be > 0")
 
-    for _ in range(int(count)):
+    count_i = int(count)
+    if progress is not None:
+        progress.update(label=progress_label, current=0, total=count_i)
+
+    for i in range(count_i):
         amp = float(rng.uniform(a0, a1))
         x0 = float(rng.uniform(0.0, width))
         y0 = float(rng.uniform(0.0, height))
@@ -462,6 +482,8 @@ def _add_gaussian_bumps(
         sy = float(rng.uniform(s0, s1))
         g = np.exp(-0.5 * (((x - x0) / sx) ** 2 + ((y - y0) / sy) ** 2))
         z2 = z2 + amp * g
+        if progress is not None:
+            progress.update(label=progress_label, current=i + 1, total=count_i)
     return z2
 
 
@@ -480,6 +502,8 @@ def _fbm_noise(
     persistence: float = 0.5,
     lacunarity: float = 2.0,
     base_wavelength_m: float = 500.0,
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "fBm",
 ) -> np.ndarray:
     """Fractal Brownian Motion (fBm) noise - doğal arazi için temel.
 
@@ -508,14 +532,22 @@ def _fbm_noise(
     amplitude = 1.0
     total_amplitude = 0.0
 
-    for i in range(octaves):
+    octaves_i = int(octaves)
+    effective_octaves = 0
+    for i in range(octaves_i):
+        wavelength = base_wavelength_m / (lacunarity**i)
+        sigma_px = wavelength / px
+        if sigma_px < 0.5:
+            break
+        effective_octaves += 1
+
+    if progress is not None and effective_octaves > 0:
+        progress.update(label=progress_label, current=0, total=effective_octaves)
+
+    for i in range(effective_octaves):
         # Bu oktav için dalga boyu ve sigma
         wavelength = base_wavelength_m / (lacunarity ** i)
         sigma_px = wavelength / px
-
-        # Minimum sigma kontrolü
-        if sigma_px < 0.5:
-            break
 
         # Beyaz gürültü üret ve yumuşat
         white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
@@ -529,6 +561,8 @@ def _fbm_noise(
         acc += amplitude * smoothed
         total_amplitude += amplitude
         amplitude *= persistence
+        if progress is not None:
+            progress.update(label=progress_label, current=i + 1, total=effective_octaves)
 
     # Toplam genliğe göre normalize et
     if total_amplitude > 0:
@@ -549,6 +583,8 @@ def _ridge_noise(
     lacunarity: float = 2.0,
     base_wavelength_m: float = 400.0,
     ridge_sharpness: float = 2.0,
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "ridges",
 ) -> np.ndarray:
     """Ridge (sırt) noise - dağ sırtları ve keskin tepeler için.
 
@@ -569,6 +605,8 @@ def _ridge_noise(
         persistence=persistence,
         lacunarity=lacunarity,
         base_wavelength_m=base_wavelength_m,
+        progress=progress,
+        progress_label=progress_label,
     )
 
     # Ridge dönüşümü: 1 - |noise| ^ sharpness
@@ -588,6 +626,8 @@ def _turbulence_noise(
     persistence: float = 0.5,
     lacunarity: float = 2.0,
     base_wavelength_m: float = 300.0,
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "turbulence",
 ) -> np.ndarray:
     """Turbulence noise - mutlak değerli fBm (daha kaotik)."""
     try:
@@ -600,12 +640,22 @@ def _turbulence_noise(
     amplitude = 1.0
     total_amplitude = 0.0
 
-    for i in range(octaves):
+    octaves_i = int(octaves)
+    effective_octaves = 0
+    for i in range(octaves_i):
         wavelength = base_wavelength_m / (lacunarity ** i)
         sigma_px = wavelength / px
 
         if sigma_px < 0.5:
             break
+        effective_octaves += 1
+
+    if progress is not None and effective_octaves > 0:
+        progress.update(label=progress_label, current=0, total=effective_octaves)
+
+    for i in range(effective_octaves):
+        wavelength = base_wavelength_m / (lacunarity ** i)
+        sigma_px = wavelength / px
 
         white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
         smoothed = gaussian_filter(white, sigma=sigma_px, mode="wrap")
@@ -618,6 +668,8 @@ def _turbulence_noise(
         acc += amplitude * np.abs(smoothed)
         total_amplitude += amplitude
         amplitude *= persistence
+        if progress is not None:
+            progress.update(label=progress_label, current=i + 1, total=effective_octaves)
 
     if total_amplitude > 0:
         acc = acc / total_amplitude
@@ -636,6 +688,8 @@ def _simple_hydraulic_erosion(
     erosion_rate: float = 0.05,
     deposition_rate: float = 0.03,
     evaporation_rate: float = 0.02,
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "erosion",
 ) -> np.ndarray:
     """Basitleştirilmiş hidrolik erozyon simülasyonu.
 
@@ -649,7 +703,11 @@ def _simple_hydraulic_erosion(
     z_eroded = z.copy()
     rows, cols = z.shape
 
-    for _ in range(iterations):
+    iterations_i = int(iterations)
+    if progress is not None and iterations_i > 0:
+        progress.update(label=progress_label, current=0, total=iterations_i)
+
+    for i in range(iterations_i):
         # Gradyan hesapla (su akış yönü)
         gy, gx = np.gradient(z_eroded)
         gradient_mag = np.sqrt(gx**2 + gy**2)
@@ -668,6 +726,8 @@ def _simple_hydraulic_erosion(
 
         # Yumuşatma (doğal difüzyon)
         z_eroded = gaussian_filter(z_eroded, sigma=0.5)
+        if progress is not None:
+            progress.update(label=progress_label, current=i + 1, total=iterations_i)
 
     return z_eroded
 
@@ -678,11 +738,17 @@ def _thermal_erosion(
     iterations: int = 30,
     talus_angle: float = 0.5,  # radyan cinsinden maksimum eğim
     erosion_amount: float = 0.1,
+    progress: ProgressPrinter | None = None,
+    progress_label: str = "thermal",
 ) -> np.ndarray:
     """Termal erozyon - aşırı dik yamaçları yumuşatır."""
     z_eroded = z.copy()
 
-    for _ in range(iterations):
+    iterations_i = int(iterations)
+    if progress is not None and iterations_i > 0:
+        progress.update(label=progress_label, current=0, total=iterations_i)
+
+    for i in range(iterations_i):
         # 4 yönde gradyan
         d_north = np.roll(z_eroded, -1, axis=0) - z_eroded
         d_south = np.roll(z_eroded, 1, axis=0) - z_eroded
@@ -698,8 +764,10 @@ def _thermal_erosion(
         ]:
             mask = d < -talus_angle
             transfer = np.where(mask, erosion_amount * (np.abs(d) - talus_angle), 0.0)
-            z_eroded -= transfer
-            z_eroded += np.roll(transfer, roll_dir, axis=roll_axis)
+        z_eroded -= transfer
+        z_eroded += np.roll(transfer, roll_dir, axis=roll_axis)
+        if progress is not None:
+            progress.update(label=progress_label, current=i + 1, total=iterations_i)
 
     return z_eroded
 
@@ -716,6 +784,8 @@ def _generate_mountain(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 800.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "mountain",
 ) -> np.ndarray:
     """Dağlık arazi üretir.
 
@@ -739,6 +809,8 @@ def _generate_mountain(
         persistence=0.55,
         lacunarity=2.1,
         base_wavelength_m=grid.width * 0.4,
+        progress=progress,
+        progress_label=f"{progress_prefix}: fbm",
     )
 
     # Ridge noise (sırtlar)
@@ -752,6 +824,8 @@ def _generate_mountain(
         persistence=0.5,
         base_wavelength_m=grid.width * 0.25,
         ridge_sharpness=2.5,
+        progress=progress,
+        progress_label=f"{progress_prefix}: ridges",
     )
 
     # Birleştir
@@ -763,16 +837,27 @@ def _generate_mountain(
 
     # Birkaç ana zirve ekle
     n_peaks = max(2, int(grid.width * grid.height / 1e7))
-    for _ in range(n_peaks):
+    if progress is not None:
+        progress.update(label=f"{progress_prefix}: peaks", current=0, total=n_peaks)
+
+    for i in range(n_peaks):
         px = float(rng.uniform(0.1 * grid.width, 0.9 * grid.width))
         py = float(rng.uniform(0.1 * grid.height, 0.9 * grid.height))
         peak_h = float(rng.uniform(30.0, 80.0)) * relief
         sigma_x = float(rng.uniform(grid.width * 0.05, grid.width * 0.15))
         sigma_y = float(rng.uniform(grid.height * 0.05, grid.height * 0.15))
         z += peak_h * np.exp(-0.5 * (((x - px) / sigma_x) ** 2 + ((y - py) / sigma_y) ** 2))
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: peaks", current=i + 1, total=n_peaks)
 
     # Hafif erozyon uygula
-    z = _simple_hydraulic_erosion(z, iterations=20, erosion_rate=0.03)
+    z = _simple_hydraulic_erosion(
+        z,
+        iterations=20,
+        erosion_rate=0.03,
+        progress=progress,
+        progress_label=f"{progress_prefix}: erosion",
+    )
 
     return z
 
@@ -785,6 +870,8 @@ def _generate_valley(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 200.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "valley",
 ) -> np.ndarray:
     """Vadi ve akarsu yatağı üretir.
 
@@ -822,6 +909,8 @@ def _generate_valley(
         octaves=6,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.3,
+        progress=progress,
+        progress_label=f"{progress_prefix}: hills",
     )
 
     # Yükseklik: kenarlar yüksek, vadi tabanı düşük
@@ -844,6 +933,8 @@ def _generate_valley(
         octaves=4,
         persistence=0.4,
         base_wavelength_m=grid.width * 0.1,
+        progress=progress,
+        progress_label=f"{progress_prefix}: floodplain",
     )
     z = np.where(
         floodplain_mask & ~river_mask,
@@ -852,7 +943,13 @@ def _generate_valley(
     )
 
     # Erozyon
-    z = _simple_hydraulic_erosion(z, iterations=30, erosion_rate=0.04)
+    z = _simple_hydraulic_erosion(
+        z,
+        iterations=30,
+        erosion_rate=0.04,
+        progress=progress,
+        progress_label=f"{progress_prefix}: erosion",
+    )
 
     return z
 
@@ -865,6 +962,8 @@ def _generate_hills(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 150.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "hills",
 ) -> np.ndarray:
     """Yumuşak tepeler (rolling hills) üretir.
 
@@ -887,6 +986,8 @@ def _generate_hills(
         persistence=0.4,  # Düşük persistence = daha yumuşak
         lacunarity=1.8,
         base_wavelength_m=grid.width * 0.5,  # Geniş dalgalar
+        progress=progress,
+        progress_label=f"{progress_prefix}: base",
     )
 
     # İkinci katman (orta ölçek)
@@ -900,6 +1001,8 @@ def _generate_hills(
         persistence=0.35,
         lacunarity=2.0,
         base_wavelength_m=grid.width * 0.2,
+        progress=progress,
+        progress_label=f"{progress_prefix}: detail",
     )
 
     # Yumuşak eğim (genel yön)
@@ -911,7 +1014,14 @@ def _generate_hills(
     )
 
     # Çok hafif termal erozyon (yumuşatma)
-    z = _thermal_erosion(z, iterations=10, talus_angle=0.6, erosion_amount=0.05)
+    z = _thermal_erosion(
+        z,
+        iterations=10,
+        talus_angle=0.6,
+        erosion_amount=0.05,
+        progress=progress,
+        progress_label=f"{progress_prefix}: smooth",
+    )
 
     return z
 
@@ -924,6 +1034,8 @@ def _generate_coastal(
     rng: np.random.Generator,
     relief: float,
     sea_level: float = 0.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "coastal",
 ) -> np.ndarray:
     """Kıyı şeridi üretir.
 
@@ -947,6 +1059,8 @@ def _generate_coastal(
         octaves=4,
         persistence=0.5,
         base_wavelength_m=grid.height * 0.3,
+        progress=progress,
+        progress_label=f"{progress_prefix}: coastline",
     )
 
     # Kıyı çizgisi x konumu (y'ye bağlı değişim)
@@ -966,6 +1080,8 @@ def _generate_coastal(
         octaves=6,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.25,
+        progress=progress,
+        progress_label=f"{progress_prefix}: land",
     )
 
     # Yükseklik profili
@@ -998,6 +1114,8 @@ def _generate_plateau(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 500.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "plateau",
 ) -> np.ndarray:
     """Yüksek plato üretir.
 
@@ -1019,6 +1137,8 @@ def _generate_plateau(
         octaves=4,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.2,
+        progress=progress,
+        progress_label=f"{progress_prefix}: boundary",
     )
 
     # Merkeze uzaklık
@@ -1045,6 +1165,8 @@ def _generate_plateau(
         octaves=4,
         persistence=0.3,
         base_wavelength_m=grid.width * 0.3,
+        progress=progress,
+        progress_label=f"{progress_prefix}: top",
     )
 
     # Alt seviye (plato dışı)
@@ -1057,6 +1179,8 @@ def _generate_plateau(
         octaves=5,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.2,
+        progress=progress,
+        progress_label=f"{progress_prefix}: lower",
     )
 
     plateau_height = 80.0 * relief
@@ -1067,7 +1191,13 @@ def _generate_plateau(
     )
 
     # Yamaçlarda erozyon
-    z = _simple_hydraulic_erosion(z, iterations=15, erosion_rate=0.02)
+    z = _simple_hydraulic_erosion(
+        z,
+        iterations=15,
+        erosion_rate=0.02,
+        progress=progress,
+        progress_label=f"{progress_prefix}: erosion",
+    )
 
     return z
 
@@ -1080,6 +1210,8 @@ def _generate_canyon(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 400.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "canyon",
 ) -> np.ndarray:
     """Kanyon/boğaz üretir.
 
@@ -1102,6 +1234,8 @@ def _generate_canyon(
         octaves=5,
         persistence=0.45,
         base_wavelength_m=grid.width * 0.4,
+        progress=progress,
+        progress_label=f"{progress_prefix}: plateau",
     )
 
     z = base_elevation + relief * 15.0 * plateau
@@ -1111,11 +1245,16 @@ def _generate_canyon(
     canyon_wavelength = grid.width * 0.5
     num_meanders = 3
 
+    if progress is not None:
+        progress.update(label=f"{progress_prefix}: meanders", current=0, total=num_meanders)
+
     for i in range(num_meanders):
         phase = float(rng.uniform(0, 2 * math.pi))
         amp = grid.height * float(rng.uniform(0.1, 0.2))
         wl = canyon_wavelength / (i + 1)
         canyon_center_y = canyon_center_y + amp * np.sin(2.0 * math.pi * x / wl + phase)
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: meanders", current=i + 1, total=num_meanders)
 
     # Kanyondan uzaklık
     dist = np.abs(y - canyon_center_y)
@@ -1130,10 +1269,15 @@ def _generate_canyon(
     # Tabaka efekti (basamaklı duvarlar)
     layer_height = 15.0 * relief
     num_layers = int(canyon_depth / layer_height)
+    if progress is not None and num_layers > 0:
+        progress.update(label=f"{progress_prefix}: layers", current=0, total=num_layers)
+
     for i in range(num_layers):
         layer_dist = canyon_width * (1.0 - i / num_layers)
         layer_mask = (dist > layer_dist * 0.95) & (dist < layer_dist * 1.05)
         canyon_profile = np.where(layer_mask, canyon_profile - 3.0 * relief, canyon_profile)
+        if progress is not None and num_layers > 0:
+            progress.update(label=f"{progress_prefix}: layers", current=i + 1, total=num_layers)
 
     z = z - canyon_profile
 
@@ -1149,6 +1293,8 @@ def _generate_canyon(
         octaves=3,
         persistence=0.4,
         base_wavelength_m=grid.width * 0.1,
+        progress=progress,
+        progress_label=f"{progress_prefix}: floor",
     )
     z = np.where(floor_mask, base_elevation - canyon_depth + relief * 2.0 * floor_noise, z)
 
@@ -1163,6 +1309,8 @@ def _generate_volcanic(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 300.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "volcanic",
 ) -> np.ndarray:
     """Volkanik arazi üretir.
 
@@ -1200,7 +1348,10 @@ def _generate_volcanic(
 
     # Yan koniler
     n_parasitic = int(rng.integers(3, 7))
-    for _ in range(n_parasitic):
+    if progress is not None and n_parasitic > 0:
+        progress.update(label=f"{progress_prefix}: cones", current=0, total=n_parasitic)
+
+    for i in range(n_parasitic):
         px = float(rng.uniform(0.2 * grid.width, 0.8 * grid.width))
         py = float(rng.uniform(0.2 * grid.height, 0.8 * grid.height))
         ph = float(rng.uniform(20.0, 50.0)) * relief
@@ -1209,10 +1360,15 @@ def _generate_volcanic(
         p_dist = np.sqrt((x - px) ** 2 + (y - py) ** 2)
         p_cone = ph * (1.0 - (p_dist / pr) ** 0.8)
         z += np.maximum(p_cone, 0.0)
+        if progress is not None and n_parasitic > 0:
+            progress.update(label=f"{progress_prefix}: cones", current=i + 1, total=n_parasitic)
 
     # Lav akış kanalları (radyal)
     n_flows = int(rng.integers(3, 6))
-    for _ in range(n_flows):
+    if progress is not None and n_flows > 0:
+        progress.update(label=f"{progress_prefix}: flows", current=0, total=n_flows)
+
+    for i in range(n_flows):
         angle = float(rng.uniform(0, 2 * math.pi))
         flow_width = float(rng.uniform(0.02, 0.04)) * grid.width
         flow_length = float(rng.uniform(0.5, 0.9)) * volcano_radius
@@ -1229,6 +1385,8 @@ def _generate_volcanic(
         flow_mask = (flow_dist < flow_width) & radial_mask
 
         z = np.where(flow_mask, z - 5.0 * relief, z)
+        if progress is not None and n_flows > 0:
+            progress.update(label=f"{progress_prefix}: flows", current=i + 1, total=n_flows)
 
     # Pürüzlülük
     roughness = _fbm_noise(
@@ -1240,6 +1398,8 @@ def _generate_volcanic(
         octaves=5,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.1,
+        progress=progress,
+        progress_label=f"{progress_prefix}: roughness",
     )
     z += relief * 5.0 * roughness
 
@@ -1254,6 +1414,8 @@ def _generate_glacial(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 400.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "glacial",
 ) -> np.ndarray:
     """Buzul vadisi (U-şekilli) üretir.
 
@@ -1276,6 +1438,8 @@ def _generate_glacial(
         octaves=6,
         persistence=0.55,
         base_wavelength_m=grid.width * 0.35,
+        progress=progress,
+        progress_label=f"{progress_prefix}: mountain",
     )
 
     z = base_elevation + relief * 60.0 * mountain + relief * 40.0
@@ -1304,6 +1468,8 @@ def _generate_glacial(
         octaves=3,
         persistence=0.3,
         base_wavelength_m=grid.width * 0.15,
+        progress=progress,
+        progress_label=f"{progress_prefix}: floor",
     )
     z = np.where(floor_mask, base_elevation - valley_depth * 0.9 + relief * 3.0 * floor_noise, z)
 
@@ -1336,6 +1502,8 @@ def _generate_karst(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 250.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "karst",
 ) -> np.ndarray:
     """Karstik arazi üretir.
 
@@ -1358,13 +1526,18 @@ def _generate_karst(
         octaves=5,
         persistence=0.45,
         base_wavelength_m=grid.width * 0.3,
+        progress=progress,
+        progress_label=f"{progress_prefix}: base",
     )
 
     z = base_elevation + relief * 20.0 * base
 
     # Düdenler (sinkholes)
     n_sinkholes = max(10, int(grid.width * grid.height / 5e5))
-    for _ in range(n_sinkholes):
+    if progress is not None:
+        progress.update(label=f"{progress_prefix}: sinkholes", current=0, total=n_sinkholes)
+
+    for i in range(n_sinkholes):
         sx = float(rng.uniform(0.05 * grid.width, 0.95 * grid.width))
         sy = float(rng.uniform(0.05 * grid.height, 0.95 * grid.height))
         sr = float(rng.uniform(5.0, 30.0))  # Yarıçap (metre)
@@ -1373,10 +1546,15 @@ def _generate_karst(
         s_dist = np.sqrt((x - sx) ** 2 + (y - sy) ** 2)
         sinkhole = sd * np.exp(-0.5 * (s_dist / sr) ** 2)
         z = z - sinkhole
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: sinkholes", current=i + 1, total=n_sinkholes)
 
     # Hum'lar (koni tepeler)
     n_hums = max(5, int(grid.width * grid.height / 1e6))
-    for _ in range(n_hums):
+    if progress is not None:
+        progress.update(label=f"{progress_prefix}: hums", current=0, total=n_hums)
+
+    for i in range(n_hums):
         hx = float(rng.uniform(0.1 * grid.width, 0.9 * grid.width))
         hy = float(rng.uniform(0.1 * grid.height, 0.9 * grid.height))
         hr = float(rng.uniform(20.0, 60.0))  # Taban yarıçapı
@@ -1385,6 +1563,8 @@ def _generate_karst(
         h_dist = np.sqrt((x - hx) ** 2 + (y - hy) ** 2)
         hum = hh * np.maximum(0.0, 1.0 - h_dist / hr)
         z = z + hum
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: hums", current=i + 1, total=n_hums)
 
     # Yüzey pürüzlülüğü (çözünme dokusu)
     roughness = _turbulence_noise(
@@ -1396,6 +1576,8 @@ def _generate_karst(
         octaves=5,
         persistence=0.6,
         base_wavelength_m=grid.width * 0.05,
+        progress=progress,
+        progress_label=f"{progress_prefix}: roughness",
     )
     z += relief * 5.0 * roughness
 
@@ -1410,6 +1592,8 @@ def _generate_alluvial(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 50.0,
+    progress: ProgressPrinter | None = None,
+    progress_prefix: str = "alluvial",
 ) -> np.ndarray:
     """Alüvyal ova/delta üretir.
 
@@ -1439,6 +1623,8 @@ def _generate_alluvial(
         octaves=4,
         persistence=0.35,
         base_wavelength_m=grid.width * 0.15,
+        progress=progress,
+        progress_label=f"{progress_prefix}: micro",
     )
     z = z + relief * 3.0 * micro
 
@@ -1449,11 +1635,16 @@ def _generate_alluvial(
 
     # Menderes
     n_meanders = 5
+    if progress is not None:
+        progress.update(label=f"{progress_prefix}: meanders", current=0, total=n_meanders)
+
     for i in range(n_meanders):
         amp = grid.height * float(rng.uniform(0.05, 0.15))
         wl = grid.width / (float(rng.uniform(1.5, 3.0)))
         phase = float(rng.uniform(0, 2 * math.pi))
         channel_y = channel_y + amp * np.sin(2.0 * math.pi * x / wl + phase)
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: meanders", current=i + 1, total=n_meanders)
 
     # Kanal kazısı
     channel_dist = np.abs(y - channel_y)
@@ -1468,7 +1659,10 @@ def _generate_alluvial(
 
     # Oxbow gölleri (terkedilmiş menderes)
     n_oxbows = int(rng.integers(2, 5))
-    for _ in range(n_oxbows):
+    if progress is not None and n_oxbows > 0:
+        progress.update(label=f"{progress_prefix}: oxbows", current=0, total=n_oxbows)
+
+    for i in range(n_oxbows):
         ox = float(rng.uniform(0.2 * grid.width, 0.8 * grid.width))
         oy = float(rng.uniform(0.3 * grid.height, 0.7 * grid.height))
         o_radius = float(rng.uniform(0.02, 0.05)) * grid.height
@@ -1479,6 +1673,8 @@ def _generate_alluvial(
         angle = np.arctan2(y - oy, x - ox)
         arc_mask = (o_dist < o_radius * 1.2) & (o_dist > o_radius * 0.8) & (np.cos(angle) > 0)
         z = np.where(arc_mask, z - o_depth, z)
+        if progress is not None and n_oxbows > 0:
+            progress.update(label=f"{progress_prefix}: oxbows", current=i + 1, total=n_oxbows)
 
     return z
 
@@ -1500,6 +1696,7 @@ def generate_synthetic_dsm(
     nodata_value: float | None = None,
     nodata_holes: int = 0,
     nodata_radius_m: float = 12.0,
+    progress: ProgressPrinter | None = None,
 ) -> np.ndarray:
     """Sentetik DSM (float32) üretir.
 
@@ -1514,6 +1711,7 @@ def generate_synthetic_dsm(
         nodata_value: Nodata değeri
         nodata_holes: Nodata delik sayısı
         nodata_radius_m: Nodata delik yarıçapı
+        progress: Opsiyonel ilerleme raporlayıcı (TTY ise tek satırlık yüzde/ETA)
 
     Returns:
         float32 numpy dizisi (yükseklik değerleri metre cinsinden)
@@ -1544,6 +1742,8 @@ def generate_synthetic_dsm(
     if preset_n not in set(SYNTHETIC_PRESETS):
         raise ValueError(f"Unknown synthetic preset: {preset!r}. Choices: {SYNTHETIC_PRESETS}")
 
+    progress_prefix = f"synth:{preset_n}"
+
     seed_i = int(seed)
     rng_main = np.random.default_rng(seed_i)
     rng_noise = np.random.default_rng(seed_i + 100)
@@ -1556,25 +1756,25 @@ def generate_synthetic_dsm(
     # GERÇEKÇİ ARAZİ TİPLERİ
     # ==========================================================================
     if preset_n == "mountain":
-        z = _generate_mountain(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_mountain(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "valley":
-        z = _generate_valley(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_valley(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "hills":
-        z = _generate_hills(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_hills(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "coastal":
-        z = _generate_coastal(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_coastal(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "plateau":
-        z = _generate_plateau(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_plateau(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "canyon":
-        z = _generate_canyon(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_canyon(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "volcanic":
-        z = _generate_volcanic(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_volcanic(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "glacial":
-        z = _generate_glacial(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_glacial(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "karst":
-        z = _generate_karst(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_karst(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "alluvial":
-        z = _generate_alluvial(x, y, grid, rng=rng_main, relief=relief)
+        z = _generate_alluvial(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
 
     # ==========================================================================
     # TEST PATTERNLERİ (ESKİ)
@@ -1602,6 +1802,8 @@ def generate_synthetic_dsm(
                 count=40,
                 amp_range=(-18.0 * relief, 18.0 * relief),
                 sigma_m_range=(10.0, 45.0),
+                progress=progress,
+                progress_label=f"{progress_prefix}: craters",
             )
             theta = math.radians(25.0)
             xr = x * math.cos(theta) + y * math.sin(theta)
@@ -1662,6 +1864,8 @@ def generate_synthetic_dsm(
                     count=20,
                     amp_range=(-10.0 * relief, 10.0 * relief),
                     sigma_m_range=(6.0, 22.0),
+                    progress=progress,
+                    progress_label=f"{progress_prefix}: bumps",
                 )
     else:
         raise ValueError(f"Unhandled preset: {preset_n}")
@@ -1674,7 +1878,13 @@ def generate_synthetic_dsm(
         sigmas_px = [0.9 / px, 2.0 / px, 5.0 / px]
         amps = [1.0, 0.55, 0.25]
         z += float(roughness_m) * _fractal_gaussian_noise(
-            rng=rng_noise, rows=rows, cols=cols, sigmas_px=sigmas_px, amps=amps
+            rng=rng_noise,
+            rows=rows,
+            cols=cols,
+            sigmas_px=sigmas_px,
+            amps=amps,
+            progress=progress,
+            progress_label=f"{progress_prefix}: roughness",
         )
 
     # ==========================================================================
@@ -1685,11 +1895,17 @@ def generate_synthetic_dsm(
         if r0 <= 0:
             raise ValueError("nodata_radius_m must be > 0")
         holes_mask = np.zeros((rows, cols), dtype=bool)
-        for _ in range(int(nodata_holes)):
+        holes_i = int(nodata_holes)
+        if progress is not None:
+            progress.update(label=f"{progress_prefix}: nodata", current=0, total=holes_i)
+
+        for i in range(holes_i):
             x0 = float(rng_holes.uniform(0.0, grid.width))
             y0 = float(rng_holes.uniform(0.0, grid.height))
             r = float(rng_holes.uniform(0.7 * r0, 1.4 * r0))
             holes_mask |= (x - x0) ** 2 + (y - y0) ** 2 <= r * r
+            if progress is not None:
+                progress.update(label=f"{progress_prefix}: nodata", current=i + 1, total=holes_i)
         z = z.copy()
         z[holes_mask] = float(nodata_value)
 
