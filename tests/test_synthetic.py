@@ -12,6 +12,7 @@ from surface_area.methods import (
 )
 from surface_area.synthetic import (
     SyntheticGrid,
+    compute_reference_surface_area,
     paraboloid,
     plane,
     reference_area_two_triangles,
@@ -114,3 +115,23 @@ def test_bilinear_n1_matches_tin() -> None:
     bil = compute_area_bilinear_integral(z, grid.dx, grid.dy, valid, N=1).a3d
     assert abs(tin - bil) / tin < 1e-12
 
+
+def test_reference_surface_area_reports_cell_counts_consistently() -> None:
+    z = np.arange(36, dtype=np.float64).reshape(6, 6)
+    z[2, 3] = np.nan
+
+    res = compute_reference_surface_area(z, dx=1.0, dy=2.0, nodata_value=None)
+
+    valid_samples = np.isfinite(z)
+    valid_cells = (
+        valid_samples[:-1, :-1]
+        & valid_samples[:-1, 1:]
+        & valid_samples[1:, :-1]
+        & valid_samples[1:, 1:]
+    )
+
+    assert res.valid_cells == int(valid_cells.sum())
+    assert res.nodata_cells == int(valid_cells.size - valid_cells.sum())
+    assert res.valid_samples == int(valid_samples.sum())
+    assert res.nodata_samples == int((~valid_samples).sum())
+    assert abs(res.planar_area_m2 - (res.valid_cells * 2.0)) < 1e-12

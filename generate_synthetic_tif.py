@@ -73,7 +73,6 @@ import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn
 
 from surface_area.io import write_dem_float32_geotiff
 from surface_area.progress import ProgressPrinter
@@ -171,8 +170,8 @@ class SynthConfig:
         metadata={"help": "Y piksel boyutu metre (None ise dx kullanılır)"},
     )
     seed: int | None = field(
-        default=None,  # None = her seferinde farklı rastgele seed
-        metadata={"help": "Rastgele sayı tohumu (None = her seferinde farklı, sabit değer = tekrarlanabilir)"},
+        default=0,
+        metadata={"help": "Rastgele sayı tohumu (sabit değer = tekrarlanabilir, None = her seferinde farklı)"},
     )
     relief: float = field(
         default=1.0,
@@ -453,6 +452,26 @@ def _print_preset_info(preset: str) -> None:
     print()
 
 
+def _valid_stats(
+    z: object,
+    *,
+    nodata_value: float | None,
+) -> tuple[float, float, float] | None:
+    """Geçerli (nodata olmayan) yükseklikler için min/max/mean döndürür."""
+    import numpy as np
+
+    z_arr = np.asarray(z, dtype=np.float64)
+    valid = np.isfinite(z_arr)
+    if nodata_value is not None and np.isfinite(float(nodata_value)):
+        valid &= ~np.isclose(z_arr, float(nodata_value))
+
+    if not np.any(valid):
+        return None
+
+    zz = z_arr[valid]
+    return float(zz.min()), float(zz.max()), float(zz.mean(dtype=np.float64))
+
+
 # =============================================================================
 # ARGÜMAN PARSER
 # =============================================================================
@@ -563,8 +582,8 @@ TEST PATTERNLERİ:
     p.add_argument(
         "--seed", "-s",
         type=int,
-        default=None,  # None = rastgele seed
-        help="Rastgele sayı tohumu. Belirtilmezse her seferinde farklı seed kullanılır. Aynı deseni tekrar üretmek için sabit bir değer verin.",
+        default=defaults.seed,
+        help=_help("seed"),
     )
 
     # Yüzey özellikleri
@@ -761,7 +780,12 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         progress.finish()
 
     if not quiet:
-        print(f"✓ DSM üretildi: min={z.min():.2f}m, max={z.max():.2f}m, mean={z.mean():.2f}m\n")
+        stats = _valid_stats(z, nodata_value=float(args.nodata) if args.nodata is not None else None)
+        if stats is None:
+            print("⚠️  DSM üretildi ancak geçerli hücre bulunamadı.\n")
+        else:
+            z_min, z_max, z_mean = stats
+            print(f"✓ DSM üretildi: min={z_min:.2f}m, max={z_max:.2f}m, mean={z_mean:.2f}m\n")
 
     # =========================================================================
     # REFERANS YÜZEY ALANI HESAPLAMA (BENCHMARK İÇİN)
@@ -828,13 +852,13 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     if ref_area is not None:
         print()
         print("=" * 60)
-        print("REFERANS YÜZEY ALANI (Benchmark için Ground Truth)")
+        print("NATIVE-GRID REFERANS YÜZEY ALANI (Benchmark)")
         print("=" * 60)
         print(f"  Düzlemsel Alan (2D):     {ref_area.planar_area_m2:,.2f} m²")
         print(f"                           {ref_area.planar_area_ha:,.4f} ha")
         print(f"                           {ref_area.planar_area_km2:,.6f} km²")
         print()
-        print(f"  Gerçek Yüzey Alanı (3D): {ref_area.surface_area_m2:,.2f} m²")
+        print(f"  Referans Yüzey Alanı (3D): {ref_area.surface_area_m2:,.2f} m²")
         print(f"                           {ref_area.surface_area_ha:,.4f} ha")
         print(f"                           {ref_area.surface_area_km2:,.6f} km²")
         print()
@@ -849,7 +873,8 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         print()
         print("-" * 60)
         print("Bu değerleri kendi yöntemlerinizle karşılaştırabilirsiniz.")
-        print("Yöntemlerinizin doğruluğu = Hesaplanan / Referans")
+        print("Not: Bu değer native-grid referanstır; analitik ground truth değildir.")
+        print("Yöntem kıyaslama oranı = Hesaplanan / Referans")
 
         # JSON formatında da çıktı ver (programatik kullanım için)
         json_file = out.with_suffix(".reference.json")
@@ -859,7 +884,8 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     if not quiet:
         print()
         print("Bu dosyayı yüzey alanı hesaplama ile test etmek için:")
-        print(f'  python main.py "{out}"')
+        suggested_outdir = out.parent / "out_run"
+        print(f'  python main.py run --dem "{out}" --outdir "{suggested_outdir}"')
 
     return 0
 
@@ -873,11 +899,16 @@ def _write_reference_json(
 ) -> None:
     """Referans yüzey alanı bilgisini JSON olarak kaydeder."""
     import json
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "tif_file": str(tif_path.resolve()),
+        "reference_method": "native_grid_two_triangle",
+        "reference_limitations": [
+            "Raster çözünürlüğüne bağlıdır.",
+            "Analitik ground truth yerine kıyaslama amaçlı bir referanstır.",
+        ],
         "parameters": {
             "preset": args.preset,
             "rows": args.rows,
@@ -908,11 +939,12 @@ def _write_reference_json(
             "dy": ref_area.dy,
             "valid_cells": ref_area.valid_cells,
             "nodata_cells": ref_area.nodata_cells,
+            "valid_samples": ref_area.valid_samples,
+            "nodata_samples": ref_area.nodata_samples,
         },
         "description": (
-            "Bu dosya, sentetik DSM'nin GERÇEK (referans) yüzey alanını içerir. "
-            "Bu değer, yüzey alanı hesaplama yöntemlerinin doğruluğunu test etmek için "
-            "ground truth olarak kullanılabilir."
+            "Bu dosya, sentetik DSM için native-grid referans yüzey alanını içerir. "
+            "Yöntem kıyaslaması için uygundur; analitik ground truth olarak yorumlanmamalıdır."
         ),
     }
 

@@ -174,15 +174,17 @@ class SurfaceAreaResult:
     """Yüzey alanı hesaplama sonucu.
 
     Attributes:
-        surface_area_m2: Gerçek 3D yüzey alanı (metrekare)
+        surface_area_m2: Referans 3D yüzey alanı (metrekare)
         planar_area_m2: Düzlemsel (2D projeksiyon) alan (metrekare)
         surface_ratio: Yüzey alanı / düzlemsel alan oranı (>=1.0)
         rows: Satır sayısı
         cols: Sütun sayısı
         dx: X piksel boyutu (metre)
         dy: Y piksel boyutu (metre)
-        valid_cells: Geçerli (nodata olmayan) hücre sayısı
-        nodata_cells: Nodata hücre sayısı
+        valid_cells: Analize dahil edilen geçerli 2D hücre sayısı
+        nodata_cells: Analiz dışında kalan 2D hücre sayısı
+        valid_samples: Geçerli merkez örnek sayısı (opsiyonel, raporlama için)
+        nodata_samples: Nodata merkez örnek sayısı (opsiyonel, raporlama için)
     """
     surface_area_m2: float
     planar_area_m2: float
@@ -193,6 +195,8 @@ class SurfaceAreaResult:
     dy: float
     valid_cells: int
     nodata_cells: int
+    valid_samples: int | None = None
+    nodata_samples: int | None = None
 
     @property
     def surface_area_km2(self) -> float:
@@ -222,11 +226,11 @@ def compute_reference_surface_area(
     dy: float,
     nodata_value: float | None = None,
 ) -> SurfaceAreaResult:
-    """Bir yükseklik dizisinin GERÇEK (referans) yüzey alanını hesaplar.
+    """Bir yükseklik dizisinin native-grid referans yüzey alanını hesaplar.
 
     Her hücre iki üçgene bölünerek 3D yüzey alanı hesaplanır.
-    Bu, sentetik verilerin benchmark olarak kullanılması için
-    "ground truth" değerini sağlar.
+    Bu değer, yöntem kıyaslaması için tekrarlanabilir bir referans sağlar;
+    analitik "ground truth" yerine raster çözünürlüğüne bağlı bir yaklaşımdır.
 
     Yöntem:
     -------
@@ -245,7 +249,7 @@ def compute_reference_surface_area(
     Örnek:
         >>> z = generate_synthetic_dsm(rows=1000, cols=1000, dx=1.0, preset="mountain")
         >>> result = compute_reference_surface_area(z, dx=1.0, dy=1.0)
-        >>> print(f"Gerçek yüzey alanı: {result.surface_area_m2:.2f} m²")
+        >>> print(f"Referans yüzey alanı: {result.surface_area_m2:.2f} m²")
         >>> print(f"Yüzey/Düzlem oranı: {result.surface_ratio:.4f}")
     """
     z = np.asarray(z, dtype=np.float64)
@@ -268,8 +272,8 @@ def compute_reference_surface_area(
         nodata_mask = np.isnan(z)
 
     valid_mask = ~nodata_mask
-    nodata_cells = int(nodata_mask.sum())
-    valid_cells = int(valid_mask.sum())
+    nodata_samples = int(nodata_mask.sum())
+    valid_samples = int(valid_mask.sum())
 
     # Hücre köşe noktalarındaki z değerlerini al
     # Her hücre (i,j) için 4 köşe: (i,j), (i,j+1), (i+1,j), (i+1,j+1)
@@ -349,6 +353,8 @@ def compute_reference_surface_area(
     # Düzlemsel alan (geçerli hücreler için)
     planar_cell_area = dx * dy
     valid_cell_count = int(cell_valid.sum())
+    total_cell_count = int((rows - 1) * (cols - 1))
+    nodata_cell_count = total_cell_count - valid_cell_count
     planar_area = valid_cell_count * planar_cell_area
 
     # Oran
@@ -365,8 +371,10 @@ def compute_reference_surface_area(
         cols=cols,
         dx=dx,
         dy=dy,
-        valid_cells=valid_cells,
-        nodata_cells=nodata_cells,
+        valid_cells=valid_cell_count,
+        nodata_cells=nodata_cell_count,
+        valid_samples=valid_samples,
+        nodata_samples=nodata_samples,
     )
 
 

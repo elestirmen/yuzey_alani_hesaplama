@@ -195,7 +195,7 @@ flowchart LR
 
     subgraph OUTPUTS["📤 Çıktı"]
         TIFF["🗺️ GeoTIFF<br/>Sentetik DSM"]
-        REF["📊 .reference.json<br/>(Ground Truth A3D)"]
+        REF["📊 .reference.json<br/>(Native-Grid Referans A3D)"]
     end
 
     PRESETS --> GENERATION
@@ -364,7 +364,7 @@ python main.py run \
 Yöntemleri gerçek DEM'lere geçmeden önce **kontrollü** yüzeyler üzerinde doğrulamak/kıyaslamak için sentetik DSM/DEM üretebilirsiniz. İki üretim yolu vardır:
 
 1. **Hızlı üretim (CLI):** `python -m surface_area synth ...` sadece GeoTIFF üretir.
-2. **Benchmark / ground truth:** `generate_synthetic_tif.py` GeoTIFF + **native çözünürlükte** referans (ground truth) A2D/A3D hesaplar ve `.reference.json` üretir.
+2. **Benchmark / native-grid referans:** `generate_synthetic_tif.py` GeoTIFF + **native çözünürlükte** referans A2D/A3D hesaplar ve `.reference.json` üretir.
 
 #### 1️⃣ Hızlı Üretim: `surface_area synth`
 
@@ -424,12 +424,13 @@ python -m surface_area run \
 | `--seed` | Tekrarlanabilirlik için sabit seed. |
 | `--nodata_holes`, `--nodata_radius_m` | Nodata delikleri oluşturarak nodata/kenar davranışını test eder. |
 
-#### 4️⃣ Ground Truth (Referans Alan): `generate_synthetic_tif.py`
+#### 4️⃣ Native-Grid Referans Alan: `generate_synthetic_tif.py`
 
 `generate_synthetic_tif.py`, aynı sentetik yüzeyi üretip **native çözünürlükte** referans A2D/A3D değerlerini hesaplar ve GeoTIFF'in yanına `.reference.json` yazar. `--out` parametresi `{preset}`, `{rows}`, `{cols}`, `{dx}`, `{seed}`, `{timestamp}` gibi şablonları da destekler.
+> Not: Bu değer raster çözünürlüğüne bağlı bir kıyas referansıdır; analitik ground truth değildir.
 
 ```bash
-# Sentetik DSM + referans alan (ground truth)
+# Sentetik DSM + native-grid referans alan
 python generate_synthetic_tif.py \
   --out out_synth/synth_mountain_dx1_seed42.tif \
   --preset mountain \
@@ -1155,7 +1156,7 @@ pytest --cov=surface_area --cov-report=html
   - **Test pattern:** plane, waves, crater_field, terraced, patchwork, mixed
 - ✅ fBm, ridge, turbulence noise üretimi
 - ✅ Hidrolik ve termal erozyon simülasyonu
-- ✅ `generate_synthetic_tif.py` ile ground truth (referans) alan çıktısı
+- ✅ `generate_synthetic_tif.py` ile native-grid referans alan çıktısı
 - ✅ ROI (GeoJSON/Shapefile) desteği (mask + fraction modları)
 - ✅ CSV/JSON/PNG çıktıları
 
