@@ -154,15 +154,15 @@ class SynthConfig:
         metadata={"help": f"Arazi tipi. Seçenekler: {', '.join(SYNTHETIC_PRESETS)}"},
     )
     rows: int = field(
-        default=2048,
+        default=4096,
         metadata={"help": f"Raster satır sayısı ({MIN_ROWS}-{MAX_ROWS})"},
     )
     cols: int = field(
-        default=2048,
+        default=4096,
         metadata={"help": f"Raster sütun sayısı ({MIN_COLS}-{MAX_COLS})"},
     )
     dx: float = field(
-        default=1.0,
+        default=0.5,
         metadata={"help": f"X piksel boyutu metre ({MIN_PIXEL_SIZE}-{MAX_PIXEL_SIZE})"},
     )
     dy: float | None = field(
