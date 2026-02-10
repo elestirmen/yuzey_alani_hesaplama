@@ -26,7 +26,7 @@ class RunConfig:
         metadata={"help": "Çıktı klasörü yolu (oluşturulur)."},
     )
     gsd: list[float] = field(
-        default_factory=lambda: [0.06, 0.1,0.5,1,2,5,10,20,50],
+        default_factory=lambda: [0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
         metadata={"help": "Hedef çözünürlük listesi (metre). Örn: [2, 5, 10]."},
     )
     methods: list[str] | None = field(

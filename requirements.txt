@@ -1,7 +1,6 @@
-numpy
-rasterio
-scipy
-pandas
-matplotlib
-pytest
-shapely
+numpy>=2.0
+rasterio>=1.4
+scipy>=1.14
+pandas>=2.2
+matplotlib>=3.9
+shapely>=2.0
