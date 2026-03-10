@@ -145,9 +145,10 @@ flowchart TB
             M1["Gradient Multiplier"]
             M2["TIN 2-Triangle"]
             M3["Jenness 8-Triangle"]
-            M4["Bilinear Integral"]
-            M5["Adaptive Bilinear"]
-            M6["Multiscale Decomposed"]
+            M4["Sector Adaptive Jenness"]
+            M5["Bilinear Integral"]
+            M6["Adaptive Bilinear"]
+            M7["Multiscale Decomposed"]
         end
     end
 
@@ -382,7 +383,7 @@ python -m surface_area run \
   --dem synthetic_patchwork.tif \
   --outdir out_synth \
   --gsd 1 2 5 10 \
-  --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral multiscale_decomposed_area \
+  --methods jenness_window_8tri sector_adaptive_jenness_integral tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral multiscale_decomposed_area \
   --plots
 ```
 
@@ -446,7 +447,7 @@ python -m surface_area run \
   --dem out_synth/synth_mountain_dx1_seed42.tif \
   --outdir out_synth_run \
   --gsd 1 \
-  --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral \
+  --methods jenness_window_8tri sector_adaptive_jenness_integral tin_2tri_cell gradient_multiplier bilinear_patch_integral adaptive_bilinear_patch_integral \
   --plots
 ```
 
@@ -489,7 +490,7 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 | Parametre | Tip | Varsayılan | Açıklama |
 |:---------:|:---:|:----------:|:---------|
 | `--gsd` | `list[float]` | `0.1, 0.5, 1, 2, 5, 10, 20, 50` | Hedef GSD (Ground Sample Distance) değerleri metre cinsinden |
-| `--methods` | `list[str]` | Tümü | Çalıştırılacak hesaplama yöntemleri |
+| `--methods` | `list[str]` | `jenness_window_8tri, tin_2tri_cell, gradient_multiplier, bilinear_patch_integral, multiscale_decomposed_area` | Çalıştırılacak hesaplama yöntemleri |
 | `--resampling` | `str` | `bilinear` | Yeniden örnekleme algoritması |
 | `--nodata` | `float` | Otomatik | Nodata değeri (dataset'te tanımlı değilse) |
 | `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
@@ -562,8 +563,8 @@ Kullanılabilir yöntemler:
 # Çoklu yöntem
 --methods gradient_multiplier tin_2tri_cell jenness_window_8tri sector_adaptive_jenness_integral
 
-# Tüm yöntemler (belirtilmezse varsayılan)
-# (--methods parametresini kullanmayın)
+# Varsayılan yöntem seti (--methods belirtilmezse)
+# jenness_window_8tri, tin_2tri_cell, gradient_multiplier, bilinear_patch_integral, multiscale_decomposed_area
 ```
 
 ---
@@ -803,11 +804,14 @@ python main.py run ^
   --dem dag_dsm.tif ^
   --outdir out ^
   --gsd 0.5 1 2 5 10 ^
-  --methods jenness_window_8tri tin_2tri_cell gradient_multiplier bilinear_patch_integral multiscale_decomposed_area ^
+  --methods jenness_window_8tri sector_adaptive_jenness_integral tin_2tri_cell gradient_multiplier bilinear_patch_integral multiscale_decomposed_area ^
   --resampling bilinear ^
   --slope_method horn ^
   --jenness_weight 0.25 ^
   --integral_N 5 ^
+  --sector_jenness_rel_tol 1e-4 ^
+  --sector_jenness_max_level 5 ^
+  --sector_jenness_min_samples 3 ^
   --sigma_mode mult ^
   --sigma_m 2 5 ^
   --plots
@@ -858,7 +862,7 @@ Heron: A = √[s(s-a)(s-b)(s-c)]  where s = (a+b+c)/2
 ### 2. Sector Adaptive Jenness Integral (`sector_adaptive_jenness_integral`)
 
 Bu yöntem, `jenness_window_8tri` için bir **replacement** değildir; aynı 3x3 neighborhood
-fikrini ve 8-sektör topolojisini koruyan **continuous-sector** bir uzantıdır.
+fikrini ve 8-sektör topolojisini koruyan **continuous-surface, sector-based** bir uzantıdır.
 
 Özet akış:
 
@@ -891,6 +895,12 @@ Klasik Jenness'ten farkı:
 Bilinear/adaptive bilinear yöntemlerinden farkı:
 - Hücre köşe değerlerinden bilinear patch kurmaz.
 - 3x3 neighborhood üzerinden 6-parametreli local quadratic model fit eder.
+
+Neden sadece "Jenness + integral" değildir:
+- Jenness'ten sadece yerel 3x3 destek ve 8-sektör fikrini korur.
+- Geometri artık komşu-merkez üçgenleri değil, hücre footprint'i içindeki sektörlerdir.
+- Yüzey artık parça-parça düz triangle fan değil, sürekli quadratic lokal modeldir.
+- Entegrasyon 3B kenar uzunluklarından değil, analitik türevli yüzey integrand'inden gelir.
 
 Yeni CLI bayrakları:
 - `--sector_jenness_rel_tol`
@@ -1135,8 +1145,8 @@ Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
 | Durum | Davranış |
 |:------|:---------|
 | Nodata hücreler | Maskelenir, hesaplamaya dahil edilmez |
-| Stencil tabanlı yöntemler (Horn/ZT, Jenness) | Tam stencil valid değilse hücre atlanır |
-| Köşe tabanlı yöntemler (TIN, Bilinear) | 4 geçerli hücre merkezinden türetilmediğinde köşe atlanır |
+| Stencil tabanlı yöntemler (Horn/ZT, Jenness, Sector Adaptive Jenness) | Tam stencil valid değilse hücre atlanır |
+| Köşe tabanlı yöntemler (TIN, Bilinear, Adaptive Bilinear) | 4 geçerli hücre merkezinden türetilmediğinde köşe atlanır |
 | Raster kenarları | Dış 1 hücre sınırı otomatik olarak dışlanır |
 
 ### CRS ve Birim Uyarıları
@@ -1162,7 +1172,7 @@ yuzey_alani_hesaplama/
 │   ├── __main__.py           # Entry point
 │   ├── cli.py                # Komut satırı arayüzü
 │   ├── io.py                 # Raster I/O işlemleri, blok işleme
-│   ├── methods.py            # 6 yüzey alanı algoritması
+│   ├── methods.py            # 7 yüzey alanı algoritması
 │   ├── multiscale.py         # Gaussian filtre ile ayrıştırma
 │   ├── plotting.py           # PNG grafik fonksiyonları
 │   ├── progress.py           # İlerleme / log çıktısı
@@ -1247,7 +1257,7 @@ pytest --cov=surface_area --cov-report=html
 
 ### v0.1.0 - İlk Sürüm
 
-- ✅ 6 yüzey alanı hesaplama yöntemi
+- ✅ 7 yüzey alanı hesaplama yöntemi
 - ✅ Multiscale (Gaussian) ayrıştırma
 - ✅ CLI arayüzü
 - ✅ 16 sentetik DSM preset'i (10 gerçekçi arazi + 6 test pattern)

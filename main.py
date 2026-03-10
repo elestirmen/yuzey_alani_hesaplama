@@ -33,8 +33,7 @@ class RunConfig:
         default_factory=lambda: None,
         metadata={
             "help": (
-                "Çalıştırılacak yöntemler. Varsayılan: ['gradient_multiplier'] (hızlı). "
-                "Tümü için None verin. "
+                "Çalıştırılacak yöntemler. None verilirse CLI varsayılan yöntem seti kullanılır. "
                 f"Seçenekler: {', '.join(surface_area_cli.METHOD_CHOICES)}"
             )
         },
