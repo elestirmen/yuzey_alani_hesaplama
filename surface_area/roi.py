@@ -30,6 +30,7 @@ from surface_area.methods import (
     _corners_from_centers,
     gradient_multiplier_cell_areas,
     jenness_window_8tri_cell_areas,
+    sector_adaptive_jenness_integral_cell_areas,
 )
 
 RoiMode = Literal["mask", "fraction"]
@@ -290,6 +291,10 @@ def compute_roi_areas_on_raster(
     adaptive_min_N: int,
     adaptive_roughness_fastpath: bool,
     adaptive_roughness_threshold: float | None,
+    sector_jenness_rel_tol: float = 1e-4,
+    sector_jenness_abs_tol: float = 0.0,
+    sector_jenness_max_level: int = 5,
+    sector_jenness_min_samples: int = 3,
     progress: ProgressFn | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     """Compute per-ROI areas for selected methods in a blockwise pass.
@@ -305,6 +310,7 @@ def compute_roi_areas_on_raster(
     wanted = [m.strip().lower() for m in methods]
     supported = {
         "jenness_window_8tri",
+        "sector_adaptive_jenness_integral",
         "tin_2tri_cell",
         "gradient_multiplier",
         "bilinear_patch_integral",
@@ -331,6 +337,9 @@ def compute_roi_areas_on_raster(
     ad_refined = np.zeros((n_rois,), dtype=np.int64)
     ad_max_level = np.zeros((n_rois,), dtype=np.int64)
     ad_subcells = np.zeros((n_rois,), dtype=np.int64)
+    sj_level_sum = np.zeros((n_rois,), dtype=np.float64)
+    sj_refined = np.zeros((n_rois,), dtype=np.int64)
+    sj_max_level = np.zeros((n_rois,), dtype=np.int64)
 
     roi_time = np.zeros((n_rois,), dtype=np.float64)
 
@@ -392,11 +401,13 @@ def compute_roi_areas_on_raster(
 
             # Method areas for this block.
             a_j = v_j = None
+            a_sj = v_sj = None
             a_g = v_g = None
             a_t = v_t = None
             a_b = v_b = None
             a_a = v_a = None
             a_levels = a_subcells = None
+            sj_levels = None
 
             # Common corner-derived values for TIN / bilinear / adaptive.
             p00 = p10 = p01 = p11 = None
@@ -410,6 +421,23 @@ def compute_roi_areas_on_raster(
                 acc_t["jenness_window_8tri"] += perf_counter() - t0
                 a_j = a[inner]
                 v_j = v[inner]
+
+            if "sector_adaptive_jenness_integral" in wanted:
+                t0 = perf_counter()
+                a, v, levels = sector_adaptive_jenness_integral_cell_areas(
+                    z,
+                    dx,
+                    dy,
+                    valid,
+                    rel_tol=float(sector_jenness_rel_tol),
+                    abs_tol=float(sector_jenness_abs_tol),
+                    max_level=int(sector_jenness_max_level),
+                    min_samples=int(sector_jenness_min_samples),
+                )
+                acc_t["sector_adaptive_jenness_integral"] += perf_counter() - t0
+                a_sj = a[inner]
+                v_sj = v[inner]
+                sj_levels = levels[inner]
 
             if "gradient_multiplier" in wanted:
                 t0 = perf_counter()
@@ -493,6 +521,8 @@ def compute_roi_areas_on_raster(
 
                 if a_j is not None and v_j is not None:
                     _accumulate("jenness_window_8tri", a_j, v_j)
+                if a_sj is not None and v_sj is not None:
+                    _accumulate("sector_adaptive_jenness_integral", a_sj, v_sj)
                 if a_g is not None and v_g is not None:
                     _accumulate("gradient_multiplier", a_g, v_g)
                 if a_t is not None and v_t is not None:
@@ -501,6 +531,15 @@ def compute_roi_areas_on_raster(
                     _accumulate("bilinear_patch_integral", a_b, v_b)
                 if a_a is not None and v_a is not None:
                     _accumulate("adaptive_bilinear_patch_integral", a_a, v_a)
+
+                if a_sj is not None and v_sj is not None and sj_levels is not None:
+                    m = (labels >= 0) & v_sj
+                    if np.any(m):
+                        idx2 = labels[m].astype(np.int64, copy=False)
+                        lvl = sj_levels[m].astype(np.float64, copy=False)
+                        sj_level_sum += np.bincount(idx2, weights=lvl, minlength=n_rois)
+                        sj_refined += np.bincount(idx2, weights=(sj_levels[m] > 0).astype(np.int64), minlength=n_rois)
+                        np.maximum.at(sj_max_level, idx2, sj_levels[m].astype(np.int64, copy=False))
 
                 # Adaptive diagnostics (mask mode) keyed only on which cells contribute (labels>=0 and v_a).
                 if a_a is not None and v_a is not None and a_levels is not None and a_subcells is not None:
@@ -602,6 +641,8 @@ def compute_roi_areas_on_raster(
 
                     if a_j is not None and v_j is not None:
                         _accum_fraction("jenness_window_8tri", a_j, v_j)
+                    if a_sj is not None and v_sj is not None:
+                        _accum_fraction("sector_adaptive_jenness_integral", a_sj, v_sj)
                     if a_g is not None and v_g is not None:
                         _accum_fraction("gradient_multiplier", a_g, v_g)
                     if a_t is not None and v_t is not None:
@@ -610,6 +651,25 @@ def compute_roi_areas_on_raster(
                         _accum_fraction("bilinear_patch_integral", a_b, v_b)
                     if a_a is not None and v_a is not None:
                         _accum_fraction("adaptive_bilinear_patch_integral", a_a, v_a)
+
+                    if sj_levels is not None and v_sj is not None:
+                        inside_valid = inside & v_sj
+                        if np.any(inside_valid):
+                            lvl = sj_levels[inside_valid].astype(np.int64, copy=False)
+                            sj_level_sum[roi_i] += float(lvl.sum(dtype=np.int64))
+                            sj_refined[roi_i] += int((lvl > 0).sum())
+                            sj_max_level[roi_i] = max(sj_max_level[roi_i], int(lvl.max(initial=0)))
+
+                        if fracs is not None and br.size:
+                            vb = v_sj[br, bc]
+                            if np.any(vb):
+                                fb = fracs[vb]
+                                use = fb > 0
+                                if np.any(use):
+                                    lvlb = sj_levels[br[vb][use], bc[vb][use]].astype(np.int64, copy=False)
+                                    sj_level_sum[roi_i] += float(lvlb.sum(dtype=np.int64))
+                                    sj_refined[roi_i] += int((lvlb > 0).sum())
+                                    sj_max_level[roi_i] = max(sj_max_level[roi_i], int(lvlb.max(initial=0)))
 
                     # Adaptive diagnostics (fraction mode): count cells with any coverage (inside or boundary frac>0).
                     if a_levels is not None and a_subcells is not None and v_a is not None:
@@ -673,6 +733,23 @@ def compute_roi_areas_on_raster(
                             "adaptive_max_level_used": 0,
                             "adaptive_refined_cell_fraction": float("nan"),
                             "adaptive_total_subcells_evaluated": 0,
+                        }
+                    )
+            if m == "sector_adaptive_jenness_integral":
+                if n > 0:
+                    row.update(
+                        {
+                            "sector_jenness_avg_level": float(sj_level_sum[roi_i] / float(n)),
+                            "sector_jenness_max_level_used": int(sj_max_level[roi_i]),
+                            "sector_jenness_refined_fraction": float(sj_refined[roi_i] / float(n)),
+                        }
+                    )
+                else:
+                    row.update(
+                        {
+                            "sector_jenness_avg_level": float("nan"),
+                            "sector_jenness_max_level_used": 0,
+                            "sector_jenness_refined_fraction": float("nan"),
                         }
                     )
             rows.append(row)

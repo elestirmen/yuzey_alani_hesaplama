@@ -85,7 +85,7 @@ python main.py
 <td width="50%">
 
 ### 🎯 Hesaplama
-- **6 farklı algoritma** ile yüzey alanı hesaplama
+- **7 farklı algoritma** ile yüzey alanı hesaplama
 - **Çoklu çözünürlük analizi** (GSD desteği)
 - **Multiscale ayrıştırma** (topoğrafik + mikro)
 - **ROI/Parsel desteği** (GeoJSON/Shapefile)
@@ -501,6 +501,10 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 | `--adaptive_min_N` | `int` | `2` | Adaptive bilinear başlangıç N |
 | `--adaptive_roughness_fastpath` | `bool` | Açık | Düz/planar patch fast-path |
 | `--adaptive_roughness_threshold` | `float` | Otomatik | Fast-path eşiği (opsiyonel) |
+| `--sector_jenness_rel_tol` | `float` | `1e-4` | Sector adaptive Jenness bağıl tolerans |
+| `--sector_jenness_abs_tol` | `float` | `0.0` | Sector adaptive Jenness mutlak tolerans |
+| `--sector_jenness_max_level` | `int` | `5` | Sector adaptive Jenness maksimum inceltme seviyesi |
+| `--sector_jenness_min_samples` | `int` | `3` | Sector adaptive Jenness için minimum triangle quadrature eşiği |
 | `--sigma_mode` | `str` | `mult` | Multiscale sigma yorumlama modu |
 | `--sigma_m` | `list[float]` | `2.0, 5.0` | Multiscale sigma değerleri |
 | `--roi` | `str` | - | ROI polygon yolu (GeoJSON veya Shapefile) |
@@ -546,6 +550,7 @@ Kullanılabilir yöntemler:
 | `gradient_multiplier` | Gradient tabanlı alan çarpanı | ⚡⚡⚡ Çok hızlı | Yüksek |
 | `tin_2tri_cell` | Her hücre 2 üçgen olarak modellenir | ⚡⚡ Hızlı | Yüksek |
 | `jenness_window_8tri` | 3x3 pencerede 8 üçgen | ⚡⚡ Hızlı | Çok yüksek |
+| `sector_adaptive_jenness_integral` | 3x3 quadratic fit + hücre içi 8 sektör integrali | ⚡ Orta | Çok yüksek |
 | `bilinear_patch_integral` | Bilinear yüzey integrasyonu | ⚡ Yavaş | En yüksek |
 | `adaptive_bilinear_patch_integral` | Bilinear integral (adaptif inceltme) | ⚡ Yavaş | En yüksek |
 | `multiscale_decomposed_area` | Çok ölçekli ayrıştırma | ⚡ Yavaş | Özel |
@@ -555,7 +560,7 @@ Kullanılabilir yöntemler:
 --methods gradient_multiplier
 
 # Çoklu yöntem
---methods gradient_multiplier tin_2tri_cell jenness_window_8tri
+--methods gradient_multiplier tin_2tri_cell jenness_window_8tri sector_adaptive_jenness_integral
 
 # Tüm yöntemler (belirtilmezse varsayılan)
 # (--methods parametresini kullanmayın)
@@ -664,6 +669,33 @@ Gradient/eğim hesaplaması için kullanılan kernel:
 --adaptive_max_level 5 \
 --adaptive_min_N 2
 ```
+
+---
+
+#### 🧭 Sector Adaptive Jenness Parametreleri
+
+`sector_adaptive_jenness_integral`, klasik `jenness_window_8tri` yönteminin yerine geçmek için değil,
+aynı 3x3 komşuluk fikrini ve 8-sektör topolojisini sürekli bir yüzey modeliyle genişletmek için
+eklenmiştir.
+
+| Parametre | Varsayılan | Açıklama |
+|:---------:|:----------:|:---------|
+| `--sector_jenness_rel_tol` | `1e-4` | Bağıl tolerans |
+| `--sector_jenness_abs_tol` | `0.0` | Mutlak tolerans |
+| `--sector_jenness_max_level` | `5` | Maksimum recursive subdivision seviyesi |
+| `--sector_jenness_min_samples` | `3` | Üçgen quadrature örnek sayısı eşiği |
+
+```bash
+--methods sector_adaptive_jenness_integral \
+--sector_jenness_rel_tol 1e-4 \
+--sector_jenness_max_level 5 \
+--sector_jenness_min_samples 3
+```
+
+Notlar:
+- İntegrasyon hücre içi 8 sektör üzerinde yapılır; eski Jenness'teki `weight=0.25` yaklaşımını kullanmaz.
+- Yerel yüzey modeli 4 köşe değerinden türetilen bilinear patch değildir; 3x3 neighborhood üzerinden fit edilen quadratic yüzeydir.
+- Düz veya neredeyse düz hücrelerde analytic plane fast-path kullanılır.
 
 ---
 
@@ -792,6 +824,7 @@ python main.py run ^
 | `gradient_multiplier` | ⚡⚡⚡ Çok hızlı | Yüksek | Gradient tabanlı alan çarpanı |
 | `tin_2tri_cell` | ⚡⚡ Hızlı | Yüksek | Her hücre 2 üçgen |
 | `jenness_window_8tri` | ⚡⚡ Hızlı | Çok yüksek | 3x3 pencerede 8 üçgen |
+| `sector_adaptive_jenness_integral` | ⚡ Orta | Çok yüksek | 3x3 quadratic fit + hücre içi 8 sektör integrali |
 | `bilinear_patch_integral` | ⚡ Yavaş | En yüksek | Bilinear yüzey integrasyonu |
 | `adaptive_bilinear_patch_integral` | ⚡ Yavaş | En yüksek | Adaptif bilinear integral |
 | `multiscale_decomposed_area` | ⚡ Yavaş | Özel | Topo + mikro ayrıştırma |
@@ -822,7 +855,65 @@ Heron: A = √[s(s-a)(s-b)(s-c)]  where s = (a+b+c)/2
 
 ---
 
-### 2. TIN 2-Triangle Cell (`tin_2tri_cell`)
+### 2. Sector Adaptive Jenness Integral (`sector_adaptive_jenness_integral`)
+
+Bu yöntem, `jenness_window_8tri` için bir **replacement** değildir; aynı 3x3 neighborhood
+fikrini ve 8-sektör topolojisini koruyan **continuous-sector** bir uzantıdır.
+
+Özet akış:
+
+1. Mevcut hücrenin etrafındaki tam 3x3 merkez örneklerinden yerel quadratic yüzey fit edilir.
+2. Yüzey modeli:
+
+```text
+z(x, y) = a*x^2 + b*y^2 + c*x*y + d*x + e*y + f
+```
+
+3. Hücrenin kendi footprint'i, merkez nokta ile 4 kenar orta noktası ve 4 köşe arasında
+   oluşan 8 sektör içine bölünür. Toplam 2D alan tam olarak `dx * dy` olur.
+4. Her sektör için alan integrali analitik türevlerle hesaplanır:
+
+```text
+dz/dx = 2*a*x + c*y + d
+dz/dy = 2*b*y + c*x + e
+
+A_cell = sum_over_8_sectors integral integral sqrt(1 + (dz/dx)^2 + (dz/dy)^2) dA
+```
+
+5. İntegrasyon adaptif triangle subdivision ile yapılır. Quadratic terimler ihmal edilebilir
+   düzeydeyse yöntem recursive çözüm yerine analytic plane fast-path kullanır.
+
+Klasik Jenness'ten farkı:
+- Komşu hücre merkezlerinden kurulan 3B triangle fan kullanmaz.
+- `weight=0.25` gibi sabit bir paylaştırma katsayısına ihtiyaç duymaz.
+- 8-sektör ayrımı hücrenin kendi 2D footprint'i içinde yapılır.
+
+Bilinear/adaptive bilinear yöntemlerinden farkı:
+- Hücre köşe değerlerinden bilinear patch kurmaz.
+- 3x3 neighborhood üzerinden 6-parametreli local quadratic model fit eder.
+
+Yeni CLI bayrakları:
+- `--sector_jenness_rel_tol`
+- `--sector_jenness_abs_tol`
+- `--sector_jenness_max_level`
+- `--sector_jenness_min_samples`
+
+Ek sonuç kolonları:
+- `sector_jenness_avg_level`
+- `sector_jenness_max_level_used`
+- `sector_jenness_refined_fraction`
+
+Beklenen güçlü yönler:
+- Yerel eğriliği klasik Jenness'ten daha iyi temsil eder.
+- Düz planlarda fast-path sayesinde gereksiz recursion yapmaz.
+- Cell footprint tam olarak korunduğu için Jenness weight heuristiği ortadan kalkar.
+
+Sınırlamalar:
+- İlk sürüm tam 3x3 geçerli stencil ister; nodata'ya karşı konservatiftir.
+- Python-level adaptif recursion, `gradient_multiplier` kadar hızlı değildir.
+- Local quadratic fit çok keskin kırıkları birebir temsil etmeyebilir.
+
+### 3. TIN 2-Triangle Cell (`tin_2tri_cell`)
 
 Her hücreyi **köşe noktaları** ile tanımlanan **2 üçgen** olarak modeller. Köşe yükseklikleri, komşu 4 hücre merkezinin ortalamasından türetilir.
 
@@ -842,7 +933,7 @@ A = 0.5 × |v1 × v2|
 
 ---
 
-### 3. Gradient Multiplier (`gradient_multiplier`)
+### 4. Gradient Multiplier (`gradient_multiplier`)
 
 Yerel eğim gradyanlarını (∂z/∂x, ∂z/∂y) kullanarak **alan çarpanı** hesaplar.
 
@@ -868,7 +959,7 @@ p = ∂z/∂x,  q = ∂z/∂y
 
 ---
 
-### 4. Bilinear Patch Integral (`bilinear_patch_integral`)
+### 5. Bilinear Patch Integral (`bilinear_patch_integral`)
 
 Her hücreyi **bilinear yüzey** olarak modeller ve **NxN alt bölme** ile sayısal integrasyon yapar.
 
@@ -891,7 +982,7 @@ z(u,v) = (1-u)(1-v)×z00 + u(1-v)×z10 + (1-u)v×z01 + uv×z11
 
 ---
 
-### 5. Adaptive Bilinear Patch Integral (`adaptive_bilinear_patch_integral`)
+### 6. Adaptive Bilinear Patch Integral (`adaptive_bilinear_patch_integral`)
 
 `bilinear_patch_integral` yönteminin tolerans kontrollü adaptif sürümüdür.
 
@@ -911,7 +1002,7 @@ z(u,v) = (1-u)(1-v)×z00 + u(1-v)×z10 + (1-u)v×z01 + uv×z11
 
 ---
 
-### 6. Multiscale Decomposed Area (`multiscale_decomposed_area`)
+### 7. Multiscale Decomposed Area (`multiscale_decomposed_area`)
 
 **Gaussian alçak geçiren filtre** ile yüzey alanını **topoğrafik** ve **mikro-pürüzlülük** bileşenlerine ayırır.
 
@@ -964,6 +1055,14 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `adaptive_max_level_used` | int | Kullanılan maksimum seviye |
 | `adaptive_refined_cell_fraction` | float | Seviye > 1 olan hücre oranı |
 | `adaptive_total_subcells_evaluated` | int | Toplam değerlendirilen alt-hücre sayısı |
+
+**Sector adaptive Jenness için ek kolonlar (CSV sonunda):**
+
+| Kolon | Tip | Açıklama |
+|:------|:---:|:---------|
+| `sector_jenness_avg_level` | float | Hücre başına kullanılan ortalama maksimum refinement seviyesi |
+| `sector_jenness_max_level_used` | int | Kullanılan maksimum refinement seviyesi |
+| `sector_jenness_refined_fraction` | float | En az bir recursive refinement alan hücre oranı |
 
 **Multiscale için ek kolonlar:**
 

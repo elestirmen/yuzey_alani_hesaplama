@@ -59,6 +59,22 @@ class RunConfig:
         default=5,
         metadata={"help": "Bilinear integral alt bölme sayısı (NxN). Örn: 5."},
     )
+    sector_jenness_rel_tol: float = field(
+        default=1e-4,
+        metadata={"help": "Sector Jenness integral bağıl toleransı."},
+    )
+    sector_jenness_abs_tol: float = field(
+        default=0.0,
+        metadata={"help": "Sector Jenness integral mutlak toleransı."},
+    )
+    sector_jenness_max_level: int = field(
+        default=5,
+        metadata={"help": "Sector Jenness adaptif integral maksimum seviye."},
+    )
+    sector_jenness_min_samples: int = field(
+        default=3,
+        metadata={"help": "Sector Jenness üçgen başına minimum quadrature örnek sayısı eşiği."},
+    )
     sigma_mode: str = field(
         default="mult",
         metadata={"help": "Multiscale sigma yorumu: mult (GSD çarpanı) | m (metre)."},
@@ -110,6 +126,14 @@ class RunConfig:
             raise ValueError("jenness_weight must be > 0")
         if int(self.integral_N) <= 0:
             raise ValueError("integral_N must be > 0")
+        if float(self.sector_jenness_rel_tol) < 0:
+            raise ValueError("sector_jenness_rel_tol must be >= 0")
+        if float(self.sector_jenness_abs_tol) < 0:
+            raise ValueError("sector_jenness_abs_tol must be >= 0")
+        if int(self.sector_jenness_max_level) < 0:
+            raise ValueError("sector_jenness_max_level must be >= 0")
+        if int(self.sector_jenness_min_samples) <= 0:
+            raise ValueError("sector_jenness_min_samples must be > 0")
         if self.sigma_mode not in {"mult", "m"}:
             raise ValueError("sigma_mode must be 'mult' or 'm'")
         if not self.sigma_m:
@@ -136,6 +160,14 @@ class RunConfig:
             f"{float(self.jenness_weight):g}",
             "--integral_N",
             str(int(self.integral_N)),
+            "--sector_jenness_rel_tol",
+            f"{float(self.sector_jenness_rel_tol):g}",
+            "--sector_jenness_abs_tol",
+            f"{float(self.sector_jenness_abs_tol):g}",
+            "--sector_jenness_max_level",
+            str(int(self.sector_jenness_max_level)),
+            "--sector_jenness_min_samples",
+            str(int(self.sector_jenness_min_samples)),
             "--sigma_mode",
             self.sigma_mode,
             "--sigma_m",

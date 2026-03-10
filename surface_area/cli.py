@@ -31,6 +31,7 @@ DEFAULT_GSD_LIST = [0.1, 0.5, 1, 2, 5, 10, 20, 50]
 
 METHOD_CHOICES = [
     "jenness_window_8tri",
+    "sector_adaptive_jenness_integral",
     "tin_2tri_cell",
     "gradient_multiplier",
     "bilinear_patch_integral",
@@ -106,6 +107,13 @@ def _results_wide(df_long: pd.DataFrame) -> pd.DataFrame:
         "a_micro",
         "a_total",
         "micro_ratio",
+        "adaptive_avg_level",
+        "adaptive_max_level_used",
+        "adaptive_refined_cell_fraction",
+        "adaptive_total_subcells_evaluated",
+        "sector_jenness_avg_level",
+        "sector_jenness_max_level_used",
+        "sector_jenness_refined_fraction",
     ]
     keep_metrics = [m for m in metrics if m in df_long.columns]
 
@@ -148,6 +156,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--adaptive_min_N", type=int, default=2)
     run.add_argument("--adaptive_roughness_fastpath", action=argparse.BooleanOptionalAction, default=True)
     run.add_argument("--adaptive_roughness_threshold", type=float, default=None)
+    run.add_argument("--sector_jenness_rel_tol", type=float, default=1e-4)
+    run.add_argument("--sector_jenness_abs_tol", type=float, default=0.0)
+    run.add_argument("--sector_jenness_max_level", type=int, default=5)
+    run.add_argument("--sector_jenness_min_samples", type=int, default=3)
     run.add_argument(
         "--sigma_mode",
         choices=["mult", "m"],
@@ -248,6 +260,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             "adaptive_roughness_threshold": None
             if args.adaptive_roughness_threshold is None
             else float(args.adaptive_roughness_threshold),
+            "sector_jenness_rel_tol": float(args.sector_jenness_rel_tol),
+            "sector_jenness_abs_tol": float(args.sector_jenness_abs_tol),
+            "sector_jenness_max_level": int(args.sector_jenness_max_level),
+            "sector_jenness_min_samples": int(args.sector_jenness_min_samples),
             "sigma_mode": args.sigma_mode,
             "sigma_m_values": list(args.sigma_m),
             "roi": None if args.roi is None else str(args.roi),
@@ -326,6 +342,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 adaptive_min_N=int(args.adaptive_min_N),
                 adaptive_roughness_fastpath=bool(args.adaptive_roughness_fastpath),
                 adaptive_roughness_threshold=args.adaptive_roughness_threshold,
+                sector_jenness_rel_tol=float(args.sector_jenness_rel_tol),
+                sector_jenness_abs_tol=float(args.sector_jenness_abs_tol),
+                sector_jenness_max_level=int(args.sector_jenness_max_level),
+                sector_jenness_min_samples=int(args.sector_jenness_min_samples),
                 progress=_methods_progress,
             )
             progress.finish()
@@ -339,6 +359,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if method == "jenness_window_8tri":
                     note_parts.append(f"weight={float(args.jenness_weight):g}")
                     note_parts.append("triangle=heron")
+                elif method == "sector_adaptive_jenness_integral":
+                    note_parts.append("surface=quadratic_ls_3x3")
+                    note_parts.append("partition=8_sector_cell")
+                    note_parts.append(f"min_samples={int(args.sector_jenness_min_samples)}")
+                    note_parts.append(f"rel_tol={float(args.sector_jenness_rel_tol):g}")
+                    note_parts.append(f"abs_tol={float(args.sector_jenness_abs_tol):g}")
+                    note_parts.append(f"max_level={int(args.sector_jenness_max_level)}")
                 elif method == "gradient_multiplier":
                     note_parts.append(f"slope_method={slope_method_n}")
                 elif method == "bilinear_patch_integral":
@@ -374,6 +401,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                             "adaptive_total_subcells_evaluated": r.adaptive_total_subcells_evaluated,
                         }
                     )
+                if method == "sector_adaptive_jenness_integral":
+                    row.update(
+                        {
+                            "sector_jenness_avg_level": r.sector_jenness_avg_level,
+                            "sector_jenness_max_level_used": r.sector_jenness_max_level_used,
+                            "sector_jenness_refined_fraction": r.sector_jenness_refined_fraction,
+                        }
+                    )
                 rows.append(row)
 
         if rois is not None and base_methods:
@@ -399,6 +434,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 adaptive_min_N=int(args.adaptive_min_N),
                 adaptive_roughness_fastpath=bool(args.adaptive_roughness_fastpath),
                 adaptive_roughness_threshold=args.adaptive_roughness_threshold,
+                sector_jenness_rel_tol=float(args.sector_jenness_rel_tol),
+                sector_jenness_abs_tol=float(args.sector_jenness_abs_tol),
+                sector_jenness_max_level=int(args.sector_jenness_max_level),
+                sector_jenness_min_samples=int(args.sector_jenness_min_samples),
                 progress=_roi_progress,
             )
             progress.finish()
@@ -480,6 +519,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             "adaptive_refined_cell_fraction",
             "adaptive_total_subcells_evaluated",
         ]
+        sector_cols = [
+            "sector_jenness_avg_level",
+            "sector_jenness_max_level_used",
+            "sector_jenness_refined_fraction",
+        ]
 
         if args.reference_csv is not None:
             try:
@@ -500,8 +544,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 print(f"WARNING: failed to read/merge reference CSV: {e}", file=sys.stderr)
 
         # Ensure any newly-added adaptive diagnostics are appended at the end of the CSV.
-        keep = [c for c in df_long.columns if c not in adaptive_cols]
-        tail = [c for c in adaptive_cols if c in df_long.columns]
+        keep = [c for c in df_long.columns if c not in adaptive_cols + sector_cols]
+        tail = [c for c in adaptive_cols if c in df_long.columns] + [c for c in sector_cols if c in df_long.columns]
         df_long = df_long[keep + tail]
 
         long_path = outdir / "results_long.csv"
@@ -531,8 +575,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             "adaptive_refined_cell_fraction",
             "adaptive_total_subcells_evaluated",
         ]
-        keep = [c for c in df_roi.columns if c not in adaptive_cols]
-        tail = [c for c in adaptive_cols if c in df_roi.columns]
+        sector_cols = [
+            "sector_jenness_avg_level",
+            "sector_jenness_max_level_used",
+            "sector_jenness_refined_fraction",
+        ]
+        keep = [c for c in df_roi.columns if c not in adaptive_cols + sector_cols]
+        tail = [c for c in adaptive_cols if c in df_roi.columns] + [c for c in sector_cols if c in df_roi.columns]
         df_roi = df_roi[keep + tail]
         roi_path = outdir / "results_roi_long.csv"
         df_roi.to_csv(roi_path, index=False)
