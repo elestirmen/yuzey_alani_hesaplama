@@ -567,6 +567,9 @@ Kullanılabilir yöntemler:
 # jenness_window_8tri, tin_2tri_cell, gradient_multiplier, bilinear_patch_integral, multiscale_decomposed_area
 ```
 
+> Not: `sector_adaptive_jenness_integral` bilinçli olarak varsayılan setin dışında bırakılmıştır.
+> Yöntem daha pahalı bir adaptif integral kullandığı için opt-in olarak `--methods` ile açıkça eklenir.
+
 ---
 
 #### 🔄 `--resampling` (Yeniden Örnekleme)
@@ -697,6 +700,7 @@ Notlar:
 - İntegrasyon hücre içi 8 sektör üzerinde yapılır; eski Jenness'teki `weight=0.25` yaklaşımını kullanmaz.
 - Yerel yüzey modeli 4 köşe değerinden türetilen bilinear patch değildir; 3x3 neighborhood üzerinden fit edilen quadratic yüzeydir.
 - Düz veya neredeyse düz hücrelerde analytic plane fast-path kullanılır.
+- Varsayılan yöntem setine dahil değildir; gerektiğinde `--methods sector_adaptive_jenness_integral` ile açıkça seçilir.
 
 ---
 
@@ -1185,7 +1189,8 @@ yuzey_alani_hesaplama/
 │   ├── test_synthetic.py     # Sentetik yüzey doğruluk testleri
 │   ├── test_cli_synth.py     # CLI synth testleri
 │   ├── test_generate_synthetic_tif_script.py  # Script + referans JSON testleri
-│   └── test_adaptive_and_roi.py  # Adaptive + ROI testleri
+│   ├── test_adaptive_and_roi.py  # Adaptive + ROI testleri
+│   └── test_sector_adaptive_jenness.py  # Sector Adaptive Jenness testleri
 ├── 📂 .githooks/
 │   └── pre-commit            # Git hook'ları
 ├── 📂 .vscode/
@@ -1226,6 +1231,7 @@ pytest --cov=surface_area --cov-report=html
 | `tests/test_cli_synth.py` | `python -m surface_area synth` komutunun ürettiği GeoTIFF/metadata kontrolleri |
 | `tests/test_generate_synthetic_tif_script.py` | `generate_synthetic_tif.py` script'inin GeoTIFF + `.reference.json` üretimi |
 | `tests/test_adaptive_and_roi.py` | Adaptif integral diagnostikleri ve ROI (mask/fraction) akışı |
+| `tests/test_sector_adaptive_jenness.py` | Yeni sector-based continuous Jenness yönteminin analitik ve CLI smoke testleri |
 
 ### Test Yüzeyleri
 
