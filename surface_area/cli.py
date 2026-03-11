@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import pandas as pd
 
@@ -47,6 +49,306 @@ DEFAULT_METHODS = [
     "bilinear_patch_integral",
     "adaptive_bilinear_patch_integral",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class _RunJob:
+    dem: str
+    tmp_dir: str
+    resampled_dir: str
+    keep_resampled: bool
+    gsd_m: float
+    gsd_idx: int
+    total_gsd: int
+    resampling: str
+    nodata: float | None
+    base_methods: tuple[str, ...]
+    compute_methods: tuple[str, ...]
+    needs_multiscale: bool
+    slope_method: SlopeMethod
+    jenness_weight: float
+    integral_N: int
+    adaptive_rel_tol: float
+    adaptive_abs_tol: float
+    adaptive_max_level: int
+    adaptive_min_N: int
+    adaptive_roughness_fastpath: bool
+    adaptive_roughness_threshold: float | None
+    sector_jenness_rel_tol: float
+    sector_jenness_abs_tol: float
+    sector_jenness_max_level: int
+    sector_jenness_min_samples: int
+    sigma_mode: str
+    sigma_m: tuple[float, ...]
+    roi_path: str | None
+    roi_id_field: str | None
+    roi_mode: str
+    roi_all_touched: bool
+    roi_only: bool
+    raster_crs: str | None
+    workers: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RunJobResult:
+    gsd_idx: int
+    total_gsd: int
+    gsd_m: float
+    rows: list[dict]
+    roi_rows: list[dict]
+
+
+def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: Any | None = None) -> _RunJobResult:
+    progress = ProgressPrinter() if show_progress else None
+
+    tag = safe_gsd_tag(job.gsd_m)
+    dst_dir = Path(job.resampled_dir if job.keep_resampled else job.tmp_dir)
+    dst_path = dst_dir / f"dem_gsd_{tag}m.tif"
+    rs = parse_resampling(job.resampling)
+
+    if progress is not None:
+        progress.log(f"[{job.gsd_idx}/{job.total_gsd}] Resampling DEM at gsd={job.gsd_m:g} ...")
+    t0 = perf_counter()
+    res_info = resample_dem(
+        src_path=job.dem,
+        dst_path=dst_path,
+        target_gsd_m=job.gsd_m,
+        resampling=rs,
+        nodata=job.nodata,
+    )
+    t_resample = perf_counter() - t0
+
+    dx = res_info.dx
+    dy = res_info.dy
+    rows: list[dict] = []
+    roi_rows: list[dict] = []
+    results: dict[str, AreaResult] = {}
+
+    if not job.roi_only:
+        method_summary = ", ".join(job.compute_methods)
+        if progress is not None:
+            progress.log(f"[{job.gsd_idx}/{job.total_gsd}] Computing methods: {method_summary}")
+
+        def _methods_progress(_: str, current: int, total: int) -> None:
+            if progress is not None:
+                progress.update(
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] compute (gsd={job.gsd_m:g})",
+                    current=current,
+                    total=total,
+                )
+
+        results, timings = compute_methods_on_raster_with_timings(
+            str(dst_path),
+            nodata=job.nodata,
+            methods=list(job.compute_methods),
+            jenness_weight=job.jenness_weight,
+            slope_method=job.slope_method,
+            integral_N=job.integral_N,
+            adaptive_rel_tol=job.adaptive_rel_tol,
+            adaptive_abs_tol=job.adaptive_abs_tol,
+            adaptive_max_level=job.adaptive_max_level,
+            adaptive_min_N=job.adaptive_min_N,
+            adaptive_roughness_fastpath=job.adaptive_roughness_fastpath,
+            adaptive_roughness_threshold=job.adaptive_roughness_threshold,
+            sector_jenness_rel_tol=job.sector_jenness_rel_tol,
+            sector_jenness_abs_tol=job.sector_jenness_abs_tol,
+            sector_jenness_max_level=job.sector_jenness_max_level,
+            sector_jenness_min_samples=job.sector_jenness_min_samples,
+            progress=_methods_progress if progress is not None else None,
+            workers=job.workers,
+        )
+        if progress is not None:
+            progress.finish()
+
+        for method in job.base_methods:
+            r = results[method]
+            a2d = float(r.valid_cells) * dx * dy
+            a3d = float(r.a3d)
+            ratio = float(a3d / a2d) if a2d > 0 else float("nan")
+            note_parts = [f"resampling={rs.name}", f"dx={dx:g}", f"dy={dy:g}"]
+            if method == "jenness_window_8tri":
+                note_parts.append(f"weight={job.jenness_weight:g}")
+                note_parts.append("triangle=heron")
+            elif method == "sector_adaptive_jenness_integral":
+                note_parts.append("surface=quadratic_ls_3x3")
+                note_parts.append("partition=8_sector_cell")
+                note_parts.append(f"min_samples={job.sector_jenness_min_samples}")
+                note_parts.append(f"rel_tol={job.sector_jenness_rel_tol:g}")
+                note_parts.append(f"abs_tol={job.sector_jenness_abs_tol:g}")
+                note_parts.append(f"max_level={job.sector_jenness_max_level}")
+            elif method == "gradient_multiplier":
+                note_parts.append(f"slope_method={job.slope_method}")
+            elif method == "bilinear_patch_integral":
+                note_parts.append(f"N={job.integral_N}")
+            elif method == "adaptive_bilinear_patch_integral":
+                note_parts.append(f"min_N={job.adaptive_min_N}")
+                note_parts.append(f"rel_tol={job.adaptive_rel_tol:g}")
+                note_parts.append(f"abs_tol={job.adaptive_abs_tol:g}")
+                note_parts.append(f"max_level={job.adaptive_max_level}")
+            elif method == "tin_2tri_cell":
+                note_parts.append("triangles=2")
+            note_parts.append("runtime=compute_only")
+
+            row = {
+                "gsd_m": job.gsd_m,
+                "dx": dx,
+                "dy": dy,
+                "method": method,
+                "A2D": a2d,
+                "A3D": a3d,
+                "ratio": ratio,
+                "valid_cells": int(r.valid_cells),
+                "runtime_sec": float(timings.get(method, float("nan"))),
+                "resample_runtime_sec": float(t_resample),
+                "note": ";".join(note_parts),
+            }
+            if method == "adaptive_bilinear_patch_integral":
+                row.update(
+                    {
+                        "adaptive_avg_level": r.adaptive_avg_level,
+                        "adaptive_max_level_used": r.adaptive_max_level_used,
+                        "adaptive_refined_cell_fraction": r.adaptive_refined_cell_fraction,
+                        "adaptive_total_subcells_evaluated": r.adaptive_total_subcells_evaluated,
+                    }
+                )
+            if method == "sector_adaptive_jenness_integral":
+                row.update(
+                    {
+                        "sector_jenness_avg_level": r.sector_jenness_avg_level,
+                        "sector_jenness_max_level_used": r.sector_jenness_max_level_used,
+                        "sector_jenness_refined_fraction": r.sector_jenness_refined_fraction,
+                    }
+                )
+            rows.append(row)
+
+    if job.roi_path is not None and job.base_methods:
+        if progress is not None:
+            progress.log(f"[{job.gsd_idx}/{job.total_gsd}] ROI aggregation (mode={job.roi_mode})")
+
+        from surface_area.roi import compute_roi_areas_on_raster, load_rois
+
+        rois = loaded_rois
+        if rois is None:
+            from rasterio.crs import CRS
+
+            rois = load_rois(
+                job.roi_path,
+                raster_crs=None if job.raster_crs is None else CRS.from_string(job.raster_crs),
+                roi_id_field=job.roi_id_field,
+            )
+
+        def _roi_progress(_: str, current: int, total: int) -> None:
+            if progress is not None:
+                progress.update(
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] roi (gsd={job.gsd_m:g})",
+                    current=current,
+                    total=total,
+                )
+
+        t0 = perf_counter()
+        r_rows, _roi_timings = compute_roi_areas_on_raster(
+            str(dst_path),
+            nodata=job.nodata,
+            rois=rois,
+            roi_mode=job.roi_mode,
+            roi_all_touched=job.roi_all_touched,
+            methods=list(job.base_methods),
+            jenness_weight=job.jenness_weight,
+            slope_method=job.slope_method,
+            integral_N=job.integral_N,
+            adaptive_rel_tol=job.adaptive_rel_tol,
+            adaptive_abs_tol=job.adaptive_abs_tol,
+            adaptive_max_level=job.adaptive_max_level,
+            adaptive_min_N=job.adaptive_min_N,
+            adaptive_roughness_fastpath=job.adaptive_roughness_fastpath,
+            adaptive_roughness_threshold=job.adaptive_roughness_threshold,
+            sector_jenness_rel_tol=job.sector_jenness_rel_tol,
+            sector_jenness_abs_tol=job.sector_jenness_abs_tol,
+            sector_jenness_max_level=job.sector_jenness_max_level,
+            sector_jenness_min_samples=job.sector_jenness_min_samples,
+            progress=_roi_progress if progress is not None else None,
+        )
+        if progress is not None:
+            progress.finish()
+        t_roi = perf_counter() - t0
+        for rr in r_rows:
+            rr.update({"gsd_m": job.gsd_m, "dx": dx, "dy": dy, "resample_runtime_sec": float(t_resample)})
+            rr["note"] = f"{rr.get('note', '')};roi_wall_sec={t_roi:g}".lstrip(";")
+            roi_rows.append(rr)
+
+    if job.needs_multiscale and not job.roi_only:
+        sigma_list = _sigma_list_for_gsd(job.gsd_m, sigma_values=list(job.sigma_m), sigma_mode=job.sigma_mode)
+        if progress is not None:
+            progress.log(f"[{job.gsd_idx}/{job.total_gsd}] Multiscale decomposition (sigma_m={sigma_list})")
+
+        def _ms_progress(stage: str, current: int, total: int) -> None:
+            if progress is not None:
+                progress.update(
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] {stage} (gsd={job.gsd_m:g})",
+                    current=current,
+                    total=total,
+                )
+
+        t0 = perf_counter()
+        ms = compute_multiscale_on_raster(
+            str(dst_path),
+            nodata=job.nodata,
+            base_method=job.slope_method,
+            sigma_m_list=sigma_list,
+            a_total=results.get("gradient_multiplier"),
+            progress=_ms_progress if progress is not None else None,
+        )
+        if progress is not None:
+            progress.finish()
+        t_ms = perf_counter() - t0
+
+        runtime_each = float(t_ms) / float(len(ms)) if ms else float("nan")
+        for ms_res in ms:
+            method_name = f"multiscale_decomposed_area_sigma{ms_res.sigma_m:g}m"
+            a2d = float(ms_res.valid_cells) * dx * dy
+            a_total = float(ms_res.a_total)
+            ratio = float(a_total / a2d) if a2d > 0 else float("nan")
+            rows.append(
+                {
+                    "gsd_m": job.gsd_m,
+                    "dx": dx,
+                    "dy": dy,
+                    "method": method_name,
+                    "A2D": a2d,
+                    "A3D": a_total,
+                    "ratio": ratio,
+                    "valid_cells": int(ms_res.valid_cells),
+                    "runtime_sec": runtime_each,
+                    "resample_runtime_sec": float(t_resample),
+                    "a_topo": float(ms_res.a_topo),
+                    "a_micro": float(ms_res.a_micro),
+                    "a_total": a_total,
+                    "micro_ratio": float(ms_res.micro_ratio),
+                    "sigma_m": float(ms_res.sigma_m),
+                    "note": ";".join(
+                        [
+                            f"base_method={job.slope_method}",
+                            f"sigma_m={ms_res.sigma_m:g}",
+                            f"sigma_mode={job.sigma_mode}",
+                            "lowpass=gaussian_normalized",
+                        ]
+                    ),
+                }
+            )
+
+    if not job.keep_resampled:
+        try:
+            dst_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return _RunJobResult(
+        gsd_idx=job.gsd_idx,
+        total_gsd=job.total_gsd,
+        gsd_m=job.gsd_m,
+        rows=rows,
+        roi_rows=roi_rows,
+    )
 
 
 def _env_versions() -> dict[str, str]:
@@ -176,6 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--reference_csv", type=Path, default=None, help="Optional reference CSV to compare")
     run.add_argument("--plots", action="store_true", help="Generate PNG plots")
     run.add_argument("--keep_resampled", action="store_true", help="Keep resampled GeoTIFFs on disk")
+    run.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of worker processes for blockwise raster compute (default: 1).",
+    )
 
     synth = sub.add_parser("synth", help="Generate a synthetic DSM/DEM GeoTIFF for method comparisons")
     synth.add_argument("--out", required=True, type=Path, help="Output GeoTIFF path")
@@ -229,6 +537,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"ERROR: --gsd must contain positive values, got: {gsd_list}", file=sys.stderr)
         return 2
     gsd_list = sorted(set(gsd_list))
+    worker_count = int(args.workers)
+    if worker_count <= 0:
+        print(f"ERROR: --workers must be >= 1, got: {worker_count}", file=sys.stderr)
+        return 2
 
     method_list = [m.strip().lower() for m in (args.methods if args.methods is not None else DEFAULT_METHODS)]
 
@@ -272,6 +584,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "roi_mode": args.roi_mode,
             "roi_all_touched": bool(args.roi_all_touched),
             "roi_only": bool(args.roi_only),
+            "workers": worker_count,
         },
     }
     _write_run_info(outdir, run_info)
@@ -291,225 +604,64 @@ def cmd_run(args: argparse.Namespace) -> int:
     if needs_multiscale:
         compute_set.add("gradient_multiplier")  # base method for multiscale
 
-    rois = None
+    loaded_rois = None
     if args.roi is not None:
         try:
-            from surface_area.roi import RoiError, compute_roi_areas_on_raster, load_rois
+            from surface_area.roi import load_rois
 
-            rois = load_rois(args.roi, raster_crs=info.crs, roi_id_field=args.roi_id_field)
-            progress.log(f"Loaded {len(rois)} ROI polygon(s) from: {args.roi}")
+            loaded_rois = load_rois(args.roi, raster_crs=info.crs, roi_id_field=args.roi_id_field)
+            progress.log(f"Loaded {len(loaded_rois)} ROI polygon(s) from: {args.roi}")
         except Exception as e:
             progress.log(f"ERROR: failed to load ROI: {e}")
             return 2
 
     total_gsd = len(gsd_list)
-    for gsd_idx, gsd_m in enumerate(gsd_list, start=1):
-        tag = safe_gsd_tag(gsd_m)
-        dst_path = (resampled_dir if args.keep_resampled else tmp_dir) / f"dem_gsd_{tag}m.tif"
-
-        progress.log(f"[{gsd_idx}/{total_gsd}] Resampling DEM at gsd={gsd_m:g} ...")
-        t0 = perf_counter()
-        res_info = resample_dem(
-            src_path=dem,
-            dst_path=dst_path,
-            target_gsd_m=gsd_m,
-            resampling=rs,
+    jobs = [
+        _RunJob(
+            dem=str(dem),
+            tmp_dir=str(tmp_dir),
+            resampled_dir=str(resampled_dir),
+            keep_resampled=bool(args.keep_resampled),
+            gsd_m=gsd_m,
+            gsd_idx=gsd_idx,
+            total_gsd=total_gsd,
+            resampling=rs.name,
             nodata=args.nodata,
+            base_methods=tuple(base_methods),
+            compute_methods=tuple(sorted(compute_set)),
+            needs_multiscale=bool(needs_multiscale),
+            slope_method=slope_method_n,
+            jenness_weight=float(args.jenness_weight),
+            integral_N=int(args.integral_N),
+            adaptive_rel_tol=float(args.adaptive_rel_tol),
+            adaptive_abs_tol=float(args.adaptive_abs_tol),
+            adaptive_max_level=int(args.adaptive_max_level),
+            adaptive_min_N=int(args.adaptive_min_N),
+            adaptive_roughness_fastpath=bool(args.adaptive_roughness_fastpath),
+            adaptive_roughness_threshold=args.adaptive_roughness_threshold,
+            sector_jenness_rel_tol=float(args.sector_jenness_rel_tol),
+            sector_jenness_abs_tol=float(args.sector_jenness_abs_tol),
+            sector_jenness_max_level=int(args.sector_jenness_max_level),
+            sector_jenness_min_samples=int(args.sector_jenness_min_samples),
+            sigma_mode=args.sigma_mode,
+            sigma_m=tuple(float(x) for x in args.sigma_m),
+            roi_path=None if args.roi is None else str(args.roi),
+            roi_id_field=args.roi_id_field,
+            roi_mode=args.roi_mode,
+            roi_all_touched=bool(args.roi_all_touched),
+            roi_only=bool(args.roi_only),
+            raster_crs=None if info.crs is None else info.crs.to_string(),
+            workers=worker_count,
         )
-        t_resample = perf_counter() - t0
+        for gsd_idx, gsd_m in enumerate(gsd_list, start=1)
+    ]
 
-        dx = res_info.dx
-        dy = res_info.dy
-
-        method_summary = ", ".join(sorted(compute_set))
-        if not args.roi_only:
-            progress.log(f"[{gsd_idx}/{total_gsd}] Computing methods: {method_summary}")
-
-        def _methods_progress(_: str, current: int, total: int) -> None:
-            progress.update(label=f"[{gsd_idx}/{total_gsd}] compute (gsd={gsd_m:g})", current=current, total=total)
-
-        results = timings = None
-        if not args.roi_only:
-            results, timings = compute_methods_on_raster_with_timings(
-                str(dst_path),
-                nodata=args.nodata,
-                methods=sorted(compute_set),
-                jenness_weight=float(args.jenness_weight),
-                slope_method=slope_method_n,
-                integral_N=int(args.integral_N),
-                adaptive_rel_tol=float(args.adaptive_rel_tol),
-                adaptive_abs_tol=float(args.adaptive_abs_tol),
-                adaptive_max_level=int(args.adaptive_max_level),
-                adaptive_min_N=int(args.adaptive_min_N),
-                adaptive_roughness_fastpath=bool(args.adaptive_roughness_fastpath),
-                adaptive_roughness_threshold=args.adaptive_roughness_threshold,
-                sector_jenness_rel_tol=float(args.sector_jenness_rel_tol),
-                sector_jenness_abs_tol=float(args.sector_jenness_abs_tol),
-                sector_jenness_max_level=int(args.sector_jenness_max_level),
-                sector_jenness_min_samples=int(args.sector_jenness_min_samples),
-                progress=_methods_progress,
-            )
-            progress.finish()
-
-            for method in base_methods:
-                r = results[method]
-                A2D = float(r.valid_cells) * dx * dy
-                A3D = float(r.a3d)
-                ratio = float(A3D / A2D) if A2D > 0 else float("nan")
-                note_parts = [f"resampling={rs.name}", f"dx={dx:g}", f"dy={dy:g}"]
-                if method == "jenness_window_8tri":
-                    note_parts.append(f"weight={float(args.jenness_weight):g}")
-                    note_parts.append("triangle=heron")
-                elif method == "sector_adaptive_jenness_integral":
-                    note_parts.append("surface=quadratic_ls_3x3")
-                    note_parts.append("partition=8_sector_cell")
-                    note_parts.append(f"min_samples={int(args.sector_jenness_min_samples)}")
-                    note_parts.append(f"rel_tol={float(args.sector_jenness_rel_tol):g}")
-                    note_parts.append(f"abs_tol={float(args.sector_jenness_abs_tol):g}")
-                    note_parts.append(f"max_level={int(args.sector_jenness_max_level)}")
-                elif method == "gradient_multiplier":
-                    note_parts.append(f"slope_method={slope_method_n}")
-                elif method == "bilinear_patch_integral":
-                    note_parts.append(f"N={int(args.integral_N)}")
-                elif method == "adaptive_bilinear_patch_integral":
-                    note_parts.append(f"min_N={int(args.adaptive_min_N)}")
-                    note_parts.append(f"rel_tol={float(args.adaptive_rel_tol):g}")
-                    note_parts.append(f"abs_tol={float(args.adaptive_abs_tol):g}")
-                    note_parts.append(f"max_level={int(args.adaptive_max_level)}")
-                elif method == "tin_2tri_cell":
-                    note_parts.append("triangles=2")
-                note_parts.append("runtime=compute_only")
-
-                row = {
-                    "gsd_m": gsd_m,
-                    "dx": dx,
-                    "dy": dy,
-                    "method": method,
-                    "A2D": A2D,
-                    "A3D": A3D,
-                    "ratio": ratio,
-                    "valid_cells": int(r.valid_cells),
-                    "runtime_sec": float(timings.get(method, float("nan"))),
-                    "resample_runtime_sec": float(t_resample),
-                    "note": ";".join(note_parts),
-                }
-                if method == "adaptive_bilinear_patch_integral":
-                    row.update(
-                        {
-                            "adaptive_avg_level": r.adaptive_avg_level,
-                            "adaptive_max_level_used": r.adaptive_max_level_used,
-                            "adaptive_refined_cell_fraction": r.adaptive_refined_cell_fraction,
-                            "adaptive_total_subcells_evaluated": r.adaptive_total_subcells_evaluated,
-                        }
-                    )
-                if method == "sector_adaptive_jenness_integral":
-                    row.update(
-                        {
-                            "sector_jenness_avg_level": r.sector_jenness_avg_level,
-                            "sector_jenness_max_level_used": r.sector_jenness_max_level_used,
-                            "sector_jenness_refined_fraction": r.sector_jenness_refined_fraction,
-                        }
-                    )
-                rows.append(row)
-
-        if rois is not None and base_methods:
-            progress.log(f"[{gsd_idx}/{total_gsd}] ROI aggregation (mode={args.roi_mode})")
-
-            def _roi_progress(_: str, current: int, total: int) -> None:
-                progress.update(label=f"[{gsd_idx}/{total_gsd}] roi (gsd={gsd_m:g})", current=current, total=total)
-
-            t0 = perf_counter()
-            r_rows, _roi_timings = compute_roi_areas_on_raster(
-                str(dst_path),
-                nodata=args.nodata,
-                rois=rois,
-                roi_mode=args.roi_mode,
-                roi_all_touched=bool(args.roi_all_touched),
-                methods=base_methods,
-                jenness_weight=float(args.jenness_weight),
-                slope_method=slope_method_n,
-                integral_N=int(args.integral_N),
-                adaptive_rel_tol=float(args.adaptive_rel_tol),
-                adaptive_abs_tol=float(args.adaptive_abs_tol),
-                adaptive_max_level=int(args.adaptive_max_level),
-                adaptive_min_N=int(args.adaptive_min_N),
-                adaptive_roughness_fastpath=bool(args.adaptive_roughness_fastpath),
-                adaptive_roughness_threshold=args.adaptive_roughness_threshold,
-                sector_jenness_rel_tol=float(args.sector_jenness_rel_tol),
-                sector_jenness_abs_tol=float(args.sector_jenness_abs_tol),
-                sector_jenness_max_level=int(args.sector_jenness_max_level),
-                sector_jenness_min_samples=int(args.sector_jenness_min_samples),
-                progress=_roi_progress,
-            )
-            progress.finish()
-            t_roi = perf_counter() - t0
-            for rr in r_rows:
-                rr.update({"gsd_m": gsd_m, "dx": dx, "dy": dy, "resample_runtime_sec": float(t_resample)})
-                # Preserve compute_roi_areas_on_raster runtime; include a top-level wall clock in note for traceability.
-                rr["note"] = f"{rr.get('note', '')};roi_wall_sec={t_roi:g}".lstrip(";")
-                roi_rows.append(rr)
-
-        if needs_multiscale and not args.roi_only:
-            sigma_list = _sigma_list_for_gsd(
-                gsd_m, sigma_values=[float(x) for x in args.sigma_m], sigma_mode=args.sigma_mode
-            )
-            progress.log(f"[{gsd_idx}/{total_gsd}] Multiscale decomposition (sigma_m={sigma_list})")
-
-            def _ms_progress(stage: str, current: int, total: int) -> None:
-                label = f"[{gsd_idx}/{total_gsd}] {stage} (gsd={gsd_m:g})"
-                progress.update(label=label, current=current, total=total)
-
-            t0 = perf_counter()
-            ms = compute_multiscale_on_raster(
-                str(dst_path),
-                nodata=args.nodata,
-                base_method=slope_method_n,
-                sigma_m_list=sigma_list,
-                a_total=results.get("gradient_multiplier"),
-                progress=_ms_progress,
-            )
-            t_ms = perf_counter() - t0
-            progress.finish()
-
-            runtime_each = float(t_ms) / float(len(ms)) if ms else float("nan")
-            for ms_res in ms:
-                method_name = f"multiscale_decomposed_area_sigma{ms_res.sigma_m:g}m"
-                A2D = float(ms_res.valid_cells) * dx * dy
-                A_total = float(ms_res.a_total)
-                ratio = float(A_total / A2D) if A2D > 0 else float("nan")
-                rows.append(
-                    {
-                        "gsd_m": gsd_m,
-                        "dx": dx,
-                        "dy": dy,
-                        "method": method_name,
-                        "A2D": A2D,
-                        "A3D": A_total,
-                        "ratio": ratio,
-                        "valid_cells": int(ms_res.valid_cells),
-                        "runtime_sec": runtime_each,
-                        "resample_runtime_sec": float(t_resample),
-                        "a_topo": float(ms_res.a_topo),
-                        "a_micro": float(ms_res.a_micro),
-                        "a_total": A_total,
-                        "micro_ratio": float(ms_res.micro_ratio),
-                        "sigma_m": float(ms_res.sigma_m),
-                        "note": ";".join(
-                            [
-                                f"base_method={slope_method_n}",
-                                f"sigma_m={ms_res.sigma_m:g}",
-                                f"sigma_mode={args.sigma_mode}",
-                                "lowpass=gaussian_normalized",
-                            ]
-                        ),
-                    }
-                )
-
-        if not args.keep_resampled:
-            try:
-                dst_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+    if worker_count > 1:
+        progress.log(f"Using {worker_count} worker process(es) for blockwise raster compute.")
+    for job in jobs:
+        result = _run_single_gsd(job, show_progress=True, loaded_rois=loaded_rois)
+        rows.extend(result.rows)
+        roi_rows.extend(result.roi_rows)
 
     if not args.roi_only:
         df_long = pd.DataFrame.from_records(rows).sort_values(["gsd_m", "method"]).reset_index(drop=True)

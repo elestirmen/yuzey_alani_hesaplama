@@ -64,8 +64,6 @@ class ProgressPrinter:
         self.stream.flush()
 
     def update(self, *, label: str, current: int, total: int) -> None:
-        if not self.enabled:
-            return
         if total <= 0:
             return
 
@@ -89,6 +87,13 @@ class ProgressPrinter:
         eta_txt = _format_seconds(eta_s) if eta_s != float("inf") else "--:--"
 
         text = f"{label}: {percent:3d}% ({current_i}/{total_i}) ETA {eta_txt}"
+        if not self.enabled:
+            print(text, file=self.stream)
+            self.stream.flush()
+            self._last_render = text
+            self._last_update_t = now
+            self._last_percent = percent
+            return
         if len(text) < len(self._last_render):
             text = text + (" " * (len(self._last_render) - len(text)))
 

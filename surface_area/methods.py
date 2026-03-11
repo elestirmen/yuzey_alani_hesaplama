@@ -13,6 +13,7 @@ Validity masking:
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import math
 from dataclasses import dataclass
 from functools import lru_cache
@@ -20,7 +21,7 @@ from typing import Callable, Literal
 
 import numpy as np
 
-from surface_area.io import block_window_count, iter_block_windows, read_window_float32
+from surface_area.io import iter_block_windows, read_window_float32
 
 ProgressFn = Callable[[str, int, int], None]
 
@@ -41,6 +42,55 @@ class AreaResult:
     sector_jenness_avg_level: float | None = None
     sector_jenness_max_level_used: int | None = None
     sector_jenness_refined_fraction: float | None = None
+
+
+_SUPPORTED_METHODS = {
+    "jenness_window_8tri",
+    "sector_adaptive_jenness_integral",
+    "tin_2tri_cell",
+    "gradient_multiplier",
+    "bilinear_patch_integral",
+    "adaptive_bilinear_patch_integral",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _MethodComputeJob:
+    raster_path: str
+    nodata: float | None
+    windows: tuple[tuple[int, int, int, int], ...]
+    dx: float
+    dy: float
+    methods: tuple[str, ...]
+    jenness_weight: float
+    slope_method: SlopeMethod
+    integral_N: int
+    adaptive_rel_tol: float
+    adaptive_abs_tol: float
+    adaptive_max_level: int
+    adaptive_min_N: int
+    adaptive_roughness_fastpath: bool
+    adaptive_roughness_threshold: float | None
+    sector_jenness_rel_tol: float
+    sector_jenness_abs_tol: float
+    sector_jenness_max_level: int
+    sector_jenness_min_samples: int
+    include_timings: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _MethodComputeChunkResult:
+    acc_a3d: dict[str, float]
+    acc_n: dict[str, int]
+    acc_t: dict[str, float]
+    ad_level_sum: int
+    ad_refined: int
+    ad_max_level: int
+    ad_subcells: int
+    sj_level_sum: int
+    sj_refined: int
+    sj_max_level: int
+    blocks_done: int
 
 
 def _triangle_area_heron(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
@@ -1269,164 +1319,48 @@ def _adaptive_bilinear_patch_integral_from_corners(
     return out_area, out_level, out_subcells
 
 
-def compute_methods_on_raster(
-    raster_path: str,
-    *,
-    nodata: float | None,
-    methods: list[str],
-    jenness_weight: float,
-    slope_method: SlopeMethod,
-    integral_N: int,
-    adaptive_rel_tol: float = 1e-4,
-    adaptive_abs_tol: float = 0.0,
-    adaptive_max_level: int = 5,
-    adaptive_min_N: int = 2,
-    adaptive_roughness_fastpath: bool = True,
-    adaptive_roughness_threshold: float | None = None,
-    sector_jenness_rel_tol: float = 1e-4,
-    sector_jenness_abs_tol: float = 0.0,
-    sector_jenness_max_level: int = 5,
-    sector_jenness_min_samples: int = 3,
-) -> dict[str, AreaResult]:
-    """Compute multiple methods in a single blockwise pass over a raster."""
-    import rasterio  # local import for faster module import in tests
-
+def _normalize_requested_methods(methods: list[str]) -> set[str]:
     wanted = {m.strip().lower() for m in methods}
-    supported = {
-        "jenness_window_8tri",
-        "sector_adaptive_jenness_integral",
-        "tin_2tri_cell",
-        "gradient_multiplier",
-        "bilinear_patch_integral",
-        "adaptive_bilinear_patch_integral",
-    }
-    unknown = sorted(wanted - supported)
+    unknown = sorted(wanted - _SUPPORTED_METHODS)
     if unknown:
-        raise ValueError(f"Unknown method(s): {unknown}. Supported: {sorted(supported)}")
+        raise ValueError(f"Unknown method(s): {unknown}. Supported: {sorted(_SUPPORTED_METHODS)}")
+    return wanted
 
-    acc_a3d: dict[str, float] = {m: 0.0 for m in supported if m in wanted}
-    acc_n: dict[str, int] = {m: 0 for m in supported if m in wanted}
 
-    # Adaptive diagnostics accumulators (only used when requested).
-    ad_level_sum = 0
-    ad_refined = 0
-    ad_max_level = 0
-    ad_subcells = 0
-    sj_level_sum = 0
-    sj_refined = 0
-    sj_max_level = 0
+def _window_to_tuple(window: object) -> tuple[int, int, int, int]:
+    return (
+        int(getattr(window, "col_off")),
+        int(getattr(window, "row_off")),
+        int(getattr(window, "width")),
+        int(getattr(window, "height")),
+    )
 
-    with rasterio.open(raster_path) as ds:
-        dx = float(abs(ds.transform.a))
-        dy = float(abs(ds.transform.e))
-        if dx <= 0 or dy <= 0:
-            raise ValueError(f"Invalid pixel sizes from transform: dx={dx}, dy={dy}")
 
-        overlap = 1
-        need_corners = bool({"tin_2tri_cell", "bilinear_patch_integral", "adaptive_bilinear_patch_integral"} & wanted)
+def _chunk_window_tuples(
+    windows: list[tuple[int, int, int, int]],
+    *,
+    workers: int,
+) -> list[tuple[tuple[int, int, int, int], ...]]:
+    if not windows:
+        return []
+    # Use smaller work batches so parallel progress updates remain responsive.
+    target_tasks = max(1, min(len(windows), int(workers) * 16))
+    chunk_size = max(1, int(math.ceil(len(windows) / float(target_tasks))))
+    return [tuple(windows[i : i + chunk_size]) for i in range(0, len(windows), chunk_size)]
 
-        for w in iter_block_windows(ds):
-            z, valid, inner = read_window_float32(ds, w, nodata=nodata, overlap=overlap)
 
-            # Common corner-derived values for TIN / bilinear.
-            p00 = p10 = p01 = p11 = None
-            corners_valid = None
-            if need_corners:
-                p00, p10, p01, p11, corners_valid = _corners_from_centers(z, valid)
-
-            if "jenness_window_8tri" in wanted:
-                a, v = jenness_window_8tri_cell_areas(z, dx, dy, valid, weight=jenness_weight)
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["jenness_window_8tri"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["jenness_window_8tri"] += int(v_in.sum())
-
-            if "sector_adaptive_jenness_integral" in wanted:
-                a, v, levels = sector_adaptive_jenness_integral_cell_areas(
-                    z,
-                    dx,
-                    dy,
-                    valid,
-                    rel_tol=float(sector_jenness_rel_tol),
-                    abs_tol=float(sector_jenness_abs_tol),
-                    max_level=int(sector_jenness_max_level),
-                    min_samples=int(sector_jenness_min_samples),
-                )
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["sector_adaptive_jenness_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["sector_adaptive_jenness_integral"] += int(v_in.sum())
-
-                lvl_in = levels[inner][v_in]
-                if lvl_in.size:
-                    sj_level_sum += int(lvl_in.sum(dtype=np.int64))
-                    sj_max_level = max(sj_max_level, int(lvl_in.max(initial=0)))
-                    sj_refined += int((lvl_in > 0).sum())
-
-            if "gradient_multiplier" in wanted:
-                a, v = gradient_multiplier_cell_areas(z, dx, dy, valid, method=slope_method)
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["gradient_multiplier"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["gradient_multiplier"] += int(v_in.sum())
-
-            if "tin_2tri_cell" in wanted:
-                assert p00 is not None and corners_valid is not None
-                dz_b = p10 - p00
-                dz_c = p11 - p00
-                mag1 = np.sqrt((dz_b * dy) ** 2 + (dx * (dz_b - dz_c)) ** 2 + (dx * dy) ** 2)
-                dz_b2 = p11 - p00
-                dz_c2 = p01 - p00
-                mag2 = np.sqrt((dy * (dz_c2 - dz_b2)) ** 2 + (dx * dz_c2) ** 2 + (dx * dy) ** 2)
-                areas = 0.5 * (mag1 + mag2)
-                areas = np.where(corners_valid, areas, 0.0)
-                v = corners_valid
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["tin_2tri_cell"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["tin_2tri_cell"] += int(v_in.sum())
-
-            if "bilinear_patch_integral" in wanted:
-                assert p00 is not None and corners_valid is not None
-                areas = _bilinear_patch_integral_from_corners(
-                    p00, p10, p01, p11, corners_valid, dx, dy, N=integral_N
-                )
-                v = corners_valid
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["bilinear_patch_integral"] += int(v_in.sum())
-
-            if "adaptive_bilinear_patch_integral" in wanted:
-                assert p00 is not None and corners_valid is not None
-                areas, levels, subcells = _adaptive_bilinear_patch_integral_from_corners(
-                    p00,
-                    p10,
-                    p01,
-                    p11,
-                    corners_valid,
-                    dx,
-                    dy,
-                    rel_tol=float(adaptive_rel_tol),
-                    abs_tol=float(adaptive_abs_tol),
-                    max_level=int(adaptive_max_level),
-                    min_N=int(adaptive_min_N),
-                    roughness_fastpath=bool(adaptive_roughness_fastpath),
-                    roughness_threshold=adaptive_roughness_threshold,
-                )
-                v = corners_valid
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["adaptive_bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["adaptive_bilinear_patch_integral"] += int(v_in.sum())
-
-                lvl_in = levels[inner][v_in]
-                if lvl_in.size:
-                    ad_level_sum += int(lvl_in.sum(dtype=np.int64))
-                    ad_max_level = max(ad_max_level, int(lvl_in.max(initial=0)))
-                    ad_refined += int((lvl_in > 1).sum())
-                    ad_subcells += int(subcells[inner][v_in].sum(dtype=np.int64))
-
+def _build_method_results(
+    acc_a3d: dict[str, float],
+    acc_n: dict[str, int],
+    *,
+    ad_level_sum: int,
+    ad_refined: int,
+    ad_max_level: int,
+    ad_subcells: int,
+    sj_level_sum: int,
+    sj_refined: int,
+    sj_max_level: int,
+) -> dict[str, AreaResult]:
     results: dict[str, AreaResult] = {}
     for m in acc_a3d:
         if m == "adaptive_bilinear_patch_integral":
@@ -1451,7 +1385,445 @@ def compute_methods_on_raster(
             )
             continue
         results[m] = AreaResult(a3d=acc_a3d[m], valid_cells=acc_n[m])
+    return results
 
+
+def _accumulate_window_metrics(
+    z: np.ndarray,
+    valid: np.ndarray,
+    inner: tuple[slice, slice],
+    *,
+    dx: float,
+    dy: float,
+    wanted: set[str],
+    jenness_weight: float,
+    slope_method: SlopeMethod,
+    integral_N: int,
+    adaptive_rel_tol: float,
+    adaptive_abs_tol: float,
+    adaptive_max_level: int,
+    adaptive_min_N: int,
+    adaptive_roughness_fastpath: bool,
+    adaptive_roughness_threshold: float | None,
+    sector_jenness_rel_tol: float,
+    sector_jenness_abs_tol: float,
+    sector_jenness_max_level: int,
+    sector_jenness_min_samples: int,
+    include_timings: bool,
+    acc_a3d: dict[str, float],
+    acc_n: dict[str, int],
+    acc_t: dict[str, float],
+    diag: dict[str, int],
+) -> None:
+    from time import perf_counter
+
+    need_corners = bool({"tin_2tri_cell", "bilinear_patch_integral", "adaptive_bilinear_patch_integral"} & wanted)
+
+    p00 = p10 = p01 = p11 = None
+    corners_valid = None
+    if need_corners:
+        if include_timings:
+            t0 = perf_counter()
+        p00, p10, p01, p11, corners_valid = _corners_from_centers(z, valid)
+        if include_timings:
+            t_corner = perf_counter() - t0
+            if "tin_2tri_cell" in wanted:
+                acc_t["tin_2tri_cell"] += t_corner
+            if "bilinear_patch_integral" in wanted:
+                acc_t["bilinear_patch_integral"] += t_corner
+            if "adaptive_bilinear_patch_integral" in wanted:
+                acc_t["adaptive_bilinear_patch_integral"] += t_corner
+
+    if "jenness_window_8tri" in wanted:
+        if include_timings:
+            t0 = perf_counter()
+        a, v = jenness_window_8tri_cell_areas(z, dx, dy, valid, weight=jenness_weight)
+        if include_timings:
+            acc_t["jenness_window_8tri"] += perf_counter() - t0
+        a_in = a[inner]
+        v_in = v[inner]
+        acc_a3d["jenness_window_8tri"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["jenness_window_8tri"] += int(v_in.sum())
+
+    if "sector_adaptive_jenness_integral" in wanted:
+        if include_timings:
+            t0 = perf_counter()
+        a, v, levels = sector_adaptive_jenness_integral_cell_areas(
+            z,
+            dx,
+            dy,
+            valid,
+            rel_tol=float(sector_jenness_rel_tol),
+            abs_tol=float(sector_jenness_abs_tol),
+            max_level=int(sector_jenness_max_level),
+            min_samples=int(sector_jenness_min_samples),
+        )
+        if include_timings:
+            acc_t["sector_adaptive_jenness_integral"] += perf_counter() - t0
+        a_in = a[inner]
+        v_in = v[inner]
+        acc_a3d["sector_adaptive_jenness_integral"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["sector_adaptive_jenness_integral"] += int(v_in.sum())
+
+        lvl_in = levels[inner][v_in]
+        if lvl_in.size:
+            diag["sj_level_sum"] += int(lvl_in.sum(dtype=np.int64))
+            diag["sj_max_level"] = max(diag["sj_max_level"], int(lvl_in.max(initial=0)))
+            diag["sj_refined"] += int((lvl_in > 0).sum())
+
+    if "gradient_multiplier" in wanted:
+        if include_timings:
+            t0 = perf_counter()
+        a, v = gradient_multiplier_cell_areas(z, dx, dy, valid, method=slope_method)
+        if include_timings:
+            acc_t["gradient_multiplier"] += perf_counter() - t0
+        a_in = a[inner]
+        v_in = v[inner]
+        acc_a3d["gradient_multiplier"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["gradient_multiplier"] += int(v_in.sum())
+
+    if "tin_2tri_cell" in wanted:
+        assert p00 is not None and corners_valid is not None
+        if include_timings:
+            t0 = perf_counter()
+        dz_b = p10 - p00
+        dz_c = p11 - p00
+        mag1 = np.sqrt((dz_b * dy) ** 2 + (dx * (dz_b - dz_c)) ** 2 + (dx * dy) ** 2)
+        dz_b2 = p11 - p00
+        dz_c2 = p01 - p00
+        mag2 = np.sqrt((dy * (dz_c2 - dz_b2)) ** 2 + (dx * dz_c2) ** 2 + (dx * dy) ** 2)
+        areas = 0.5 * (mag1 + mag2)
+        areas = np.where(corners_valid, areas, 0.0)
+        if include_timings:
+            acc_t["tin_2tri_cell"] += perf_counter() - t0
+        v = corners_valid
+        a_in = areas[inner]
+        v_in = v[inner]
+        acc_a3d["tin_2tri_cell"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["tin_2tri_cell"] += int(v_in.sum())
+
+    if "bilinear_patch_integral" in wanted:
+        assert p00 is not None and corners_valid is not None
+        if include_timings:
+            t0 = perf_counter()
+        areas = _bilinear_patch_integral_from_corners(p00, p10, p01, p11, corners_valid, dx, dy, N=integral_N)
+        if include_timings:
+            acc_t["bilinear_patch_integral"] += perf_counter() - t0
+        v = corners_valid
+        a_in = areas[inner]
+        v_in = v[inner]
+        acc_a3d["bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["bilinear_patch_integral"] += int(v_in.sum())
+
+    if "adaptive_bilinear_patch_integral" in wanted:
+        assert p00 is not None and corners_valid is not None
+        if include_timings:
+            t0 = perf_counter()
+        areas, levels, subcells = _adaptive_bilinear_patch_integral_from_corners(
+            p00,
+            p10,
+            p01,
+            p11,
+            corners_valid,
+            dx,
+            dy,
+            rel_tol=float(adaptive_rel_tol),
+            abs_tol=float(adaptive_abs_tol),
+            max_level=int(adaptive_max_level),
+            min_N=int(adaptive_min_N),
+            roughness_fastpath=bool(adaptive_roughness_fastpath),
+            roughness_threshold=adaptive_roughness_threshold,
+        )
+        if include_timings:
+            acc_t["adaptive_bilinear_patch_integral"] += perf_counter() - t0
+        v = corners_valid
+        a_in = areas[inner]
+        v_in = v[inner]
+        acc_a3d["adaptive_bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
+        acc_n["adaptive_bilinear_patch_integral"] += int(v_in.sum())
+
+        lvl_in = levels[inner][v_in]
+        if lvl_in.size:
+            diag["ad_level_sum"] += int(lvl_in.sum(dtype=np.int64))
+            diag["ad_max_level"] = max(diag["ad_max_level"], int(lvl_in.max(initial=0)))
+            diag["ad_refined"] += int((lvl_in > 1).sum())
+            diag["ad_subcells"] += int(subcells[inner][v_in].sum(dtype=np.int64))
+
+
+def _compute_method_chunk(job: _MethodComputeJob) -> _MethodComputeChunkResult:
+    import rasterio
+    from rasterio.windows import Window
+
+    wanted = set(job.methods)
+    acc_a3d: dict[str, float] = {m: 0.0 for m in job.methods}
+    acc_n: dict[str, int] = {m: 0 for m in job.methods}
+    acc_t: dict[str, float] = {m: 0.0 for m in job.methods}
+    diag = {
+        "ad_level_sum": 0,
+        "ad_refined": 0,
+        "ad_max_level": 0,
+        "ad_subcells": 0,
+        "sj_level_sum": 0,
+        "sj_refined": 0,
+        "sj_max_level": 0,
+    }
+
+    with rasterio.open(job.raster_path) as ds:
+        for w_tuple in job.windows:
+            window = Window(*w_tuple)
+            z, valid, inner = read_window_float32(ds, window, nodata=job.nodata, overlap=1)
+            _accumulate_window_metrics(
+                z,
+                valid,
+                inner,
+                dx=job.dx,
+                dy=job.dy,
+                wanted=wanted,
+                jenness_weight=job.jenness_weight,
+                slope_method=job.slope_method,
+                integral_N=job.integral_N,
+                adaptive_rel_tol=job.adaptive_rel_tol,
+                adaptive_abs_tol=job.adaptive_abs_tol,
+                adaptive_max_level=job.adaptive_max_level,
+                adaptive_min_N=job.adaptive_min_N,
+                adaptive_roughness_fastpath=job.adaptive_roughness_fastpath,
+                adaptive_roughness_threshold=job.adaptive_roughness_threshold,
+                sector_jenness_rel_tol=job.sector_jenness_rel_tol,
+                sector_jenness_abs_tol=job.sector_jenness_abs_tol,
+                sector_jenness_max_level=job.sector_jenness_max_level,
+                sector_jenness_min_samples=job.sector_jenness_min_samples,
+                include_timings=job.include_timings,
+                acc_a3d=acc_a3d,
+                acc_n=acc_n,
+                acc_t=acc_t,
+                diag=diag,
+            )
+
+    return _MethodComputeChunkResult(
+        acc_a3d=acc_a3d,
+        acc_n=acc_n,
+        acc_t=acc_t,
+        ad_level_sum=diag["ad_level_sum"],
+        ad_refined=diag["ad_refined"],
+        ad_max_level=diag["ad_max_level"],
+        ad_subcells=diag["ad_subcells"],
+        sj_level_sum=diag["sj_level_sum"],
+        sj_refined=diag["sj_refined"],
+        sj_max_level=diag["sj_max_level"],
+        blocks_done=len(job.windows),
+    )
+
+
+def _compute_methods_on_raster_impl(
+    raster_path: str,
+    *,
+    nodata: float | None,
+    methods: list[str],
+    jenness_weight: float,
+    slope_method: SlopeMethod,
+    integral_N: int,
+    adaptive_rel_tol: float,
+    adaptive_abs_tol: float,
+    adaptive_max_level: int,
+    adaptive_min_N: int,
+    adaptive_roughness_fastpath: bool,
+    adaptive_roughness_threshold: float | None,
+    sector_jenness_rel_tol: float,
+    sector_jenness_abs_tol: float,
+    sector_jenness_max_level: int,
+    sector_jenness_min_samples: int,
+    include_timings: bool,
+    progress: ProgressFn | None,
+    workers: int,
+) -> tuple[dict[str, AreaResult], dict[str, float]]:
+    import rasterio
+    from rasterio.windows import Window
+
+    wanted = _normalize_requested_methods(methods)
+    worker_count = int(workers)
+    if worker_count <= 0:
+        raise ValueError(f"workers must be >= 1, got: {worker_count}")
+
+    method_names = tuple(sorted(wanted))
+    acc_a3d: dict[str, float] = {m: 0.0 for m in method_names}
+    acc_n: dict[str, int] = {m: 0 for m in method_names}
+    acc_t: dict[str, float] = {m: 0.0 for m in method_names}
+    diag = {
+        "ad_level_sum": 0,
+        "ad_refined": 0,
+        "ad_max_level": 0,
+        "ad_subcells": 0,
+        "sj_level_sum": 0,
+        "sj_refined": 0,
+        "sj_max_level": 0,
+    }
+
+    with rasterio.open(raster_path) as ds:
+        dx = float(abs(ds.transform.a))
+        dy = float(abs(ds.transform.e))
+        if dx <= 0 or dy <= 0:
+            raise ValueError(f"Invalid pixel sizes from transform: dx={dx}, dy={dy}")
+
+        windows = [_window_to_tuple(w) for w in iter_block_windows(ds)]
+        total_blocks = len(windows)
+        if progress is not None:
+            progress("compute", 0, total_blocks)
+
+        if worker_count == 1 or total_blocks <= 1:
+            block_i = 0
+            for w_tuple in windows:
+                block_i += 1
+                window = Window(*w_tuple)
+                z, valid, inner = read_window_float32(ds, window, nodata=nodata, overlap=1)
+                _accumulate_window_metrics(
+                    z,
+                    valid,
+                    inner,
+                    dx=dx,
+                    dy=dy,
+                    wanted=wanted,
+                    jenness_weight=jenness_weight,
+                    slope_method=slope_method,
+                    integral_N=integral_N,
+                    adaptive_rel_tol=adaptive_rel_tol,
+                    adaptive_abs_tol=adaptive_abs_tol,
+                    adaptive_max_level=adaptive_max_level,
+                    adaptive_min_N=adaptive_min_N,
+                    adaptive_roughness_fastpath=adaptive_roughness_fastpath,
+                    adaptive_roughness_threshold=adaptive_roughness_threshold,
+                    sector_jenness_rel_tol=sector_jenness_rel_tol,
+                    sector_jenness_abs_tol=sector_jenness_abs_tol,
+                    sector_jenness_max_level=sector_jenness_max_level,
+                    sector_jenness_min_samples=sector_jenness_min_samples,
+                    include_timings=include_timings,
+                    acc_a3d=acc_a3d,
+                    acc_n=acc_n,
+                    acc_t=acc_t,
+                    diag=diag,
+                )
+                if progress is not None:
+                    progress("compute", block_i, total_blocks)
+
+            return (
+                _build_method_results(
+                    acc_a3d,
+                    acc_n,
+                    ad_level_sum=diag["ad_level_sum"],
+                    ad_refined=diag["ad_refined"],
+                    ad_max_level=diag["ad_max_level"],
+                    ad_subcells=diag["ad_subcells"],
+                    sj_level_sum=diag["sj_level_sum"],
+                    sj_refined=diag["sj_refined"],
+                    sj_max_level=diag["sj_max_level"],
+                ),
+                acc_t,
+            )
+
+    chunks = _chunk_window_tuples(windows, workers=worker_count)
+    jobs = [
+        _MethodComputeJob(
+            raster_path=raster_path,
+            nodata=nodata,
+            windows=chunk,
+            dx=dx,
+            dy=dy,
+            methods=method_names,
+            jenness_weight=jenness_weight,
+            slope_method=slope_method,
+            integral_N=integral_N,
+            adaptive_rel_tol=adaptive_rel_tol,
+            adaptive_abs_tol=adaptive_abs_tol,
+            adaptive_max_level=adaptive_max_level,
+            adaptive_min_N=adaptive_min_N,
+            adaptive_roughness_fastpath=adaptive_roughness_fastpath,
+            adaptive_roughness_threshold=adaptive_roughness_threshold,
+            sector_jenness_rel_tol=sector_jenness_rel_tol,
+            sector_jenness_abs_tol=sector_jenness_abs_tol,
+            sector_jenness_max_level=sector_jenness_max_level,
+            sector_jenness_min_samples=sector_jenness_min_samples,
+            include_timings=include_timings,
+        )
+        for chunk in chunks
+    ]
+
+    completed_blocks = 0
+    with ProcessPoolExecutor(max_workers=min(worker_count, len(jobs))) as executor:
+        future_map = {executor.submit(_compute_method_chunk, job): len(job.windows) for job in jobs}
+        for future in as_completed(future_map):
+            chunk_res = future.result()
+            for m in method_names:
+                acc_a3d[m] += float(chunk_res.acc_a3d.get(m, 0.0))
+                acc_n[m] += int(chunk_res.acc_n.get(m, 0))
+                acc_t[m] += float(chunk_res.acc_t.get(m, 0.0))
+            diag["ad_level_sum"] += int(chunk_res.ad_level_sum)
+            diag["ad_refined"] += int(chunk_res.ad_refined)
+            diag["ad_max_level"] = max(diag["ad_max_level"], int(chunk_res.ad_max_level))
+            diag["ad_subcells"] += int(chunk_res.ad_subcells)
+            diag["sj_level_sum"] += int(chunk_res.sj_level_sum)
+            diag["sj_refined"] += int(chunk_res.sj_refined)
+            diag["sj_max_level"] = max(diag["sj_max_level"], int(chunk_res.sj_max_level))
+            completed_blocks += int(chunk_res.blocks_done)
+            if progress is not None:
+                progress("compute", completed_blocks, total_blocks)
+
+    return (
+        _build_method_results(
+            acc_a3d,
+            acc_n,
+            ad_level_sum=diag["ad_level_sum"],
+            ad_refined=diag["ad_refined"],
+            ad_max_level=diag["ad_max_level"],
+            ad_subcells=diag["ad_subcells"],
+            sj_level_sum=diag["sj_level_sum"],
+            sj_refined=diag["sj_refined"],
+            sj_max_level=diag["sj_max_level"],
+        ),
+        acc_t,
+    )
+
+
+def compute_methods_on_raster(
+    raster_path: str,
+    *,
+    nodata: float | None,
+    methods: list[str],
+    jenness_weight: float,
+    slope_method: SlopeMethod,
+    integral_N: int,
+    adaptive_rel_tol: float = 1e-4,
+    adaptive_abs_tol: float = 0.0,
+    adaptive_max_level: int = 5,
+    adaptive_min_N: int = 2,
+    adaptive_roughness_fastpath: bool = True,
+    adaptive_roughness_threshold: float | None = None,
+    sector_jenness_rel_tol: float = 1e-4,
+    sector_jenness_abs_tol: float = 0.0,
+    sector_jenness_max_level: int = 5,
+    sector_jenness_min_samples: int = 3,
+    workers: int = 1,
+) -> dict[str, AreaResult]:
+    """Compute multiple methods in a single blockwise pass over a raster."""
+    results, _ = _compute_methods_on_raster_impl(
+        raster_path,
+        nodata=nodata,
+        methods=methods,
+        jenness_weight=jenness_weight,
+        slope_method=slope_method,
+        integral_N=integral_N,
+        adaptive_rel_tol=adaptive_rel_tol,
+        adaptive_abs_tol=adaptive_abs_tol,
+        adaptive_max_level=adaptive_max_level,
+        adaptive_min_N=adaptive_min_N,
+        adaptive_roughness_fastpath=adaptive_roughness_fastpath,
+        adaptive_roughness_threshold=adaptive_roughness_threshold,
+        sector_jenness_rel_tol=sector_jenness_rel_tol,
+        sector_jenness_abs_tol=sector_jenness_abs_tol,
+        sector_jenness_max_level=sector_jenness_max_level,
+        sector_jenness_min_samples=sector_jenness_min_samples,
+        include_timings=False,
+        progress=None,
+        workers=workers,
+    )
     return results
 
 
@@ -1474,202 +1846,30 @@ def compute_methods_on_raster_with_timings(
     sector_jenness_max_level: int = 5,
     sector_jenness_min_samples: int = 3,
     progress: ProgressFn | None = None,
+    workers: int = 1,
 ) -> tuple[dict[str, AreaResult], dict[str, float]]:
     """Like compute_methods_on_raster, but also returns per-method compute time (seconds).
 
     Timing is *compute-only* (excludes raster IO), accumulated across blocks.
     """
-    from time import perf_counter
-
-    wanted = {m.strip().lower() for m in methods}
-    supported = {
-        "jenness_window_8tri",
-        "sector_adaptive_jenness_integral",
-        "tin_2tri_cell",
-        "gradient_multiplier",
-        "bilinear_patch_integral",
-        "adaptive_bilinear_patch_integral",
-    }
-    unknown = sorted(wanted - supported)
-    if unknown:
-        raise ValueError(f"Unknown method(s): {unknown}. Supported: {sorted(supported)}")
-
-    acc_a3d: dict[str, float] = {m: 0.0 for m in supported if m in wanted}
-    acc_n: dict[str, int] = {m: 0 for m in supported if m in wanted}
-    acc_t: dict[str, float] = {m: 0.0 for m in supported if m in wanted}
-
-    # Adaptive diagnostics accumulators (only used when requested).
-    ad_level_sum = 0
-    ad_refined = 0
-    ad_max_level = 0
-    ad_subcells = 0
-    sj_level_sum = 0
-    sj_refined = 0
-    sj_max_level = 0
-
-    import rasterio  # local import
-
-    with rasterio.open(raster_path) as ds:
-        dx = float(abs(ds.transform.a))
-        dy = float(abs(ds.transform.e))
-        if dx <= 0 or dy <= 0:
-            raise ValueError(f"Invalid pixel sizes from transform: dx={dx}, dy={dy}")
-
-        total_blocks = block_window_count(ds)
-        block_i = 0
-
-        overlap = 1
-        need_corners = bool({"tin_2tri_cell", "bilinear_patch_integral", "adaptive_bilinear_patch_integral"} & wanted)
-
-        for w in iter_block_windows(ds):
-            block_i += 1
-            z, valid, inner = read_window_float32(ds, w, nodata=nodata, overlap=overlap)
-
-            # Common corner-derived values for TIN / bilinear.
-            p00 = p10 = p01 = p11 = None
-            corners_valid = None
-            if need_corners:
-                t0 = perf_counter()
-                p00, p10, p01, p11, corners_valid = _corners_from_centers(z, valid)
-                t_corner = perf_counter() - t0
-                # Count corner derivation time towards both corner-based methods if requested.
-                if "tin_2tri_cell" in wanted:
-                    acc_t["tin_2tri_cell"] += t_corner
-                if "bilinear_patch_integral" in wanted:
-                    acc_t["bilinear_patch_integral"] += t_corner
-                if "adaptive_bilinear_patch_integral" in wanted:
-                    acc_t["adaptive_bilinear_patch_integral"] += t_corner
-
-            if "jenness_window_8tri" in wanted:
-                t0 = perf_counter()
-                a, v = jenness_window_8tri_cell_areas(z, dx, dy, valid, weight=jenness_weight)
-                acc_t["jenness_window_8tri"] += perf_counter() - t0
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["jenness_window_8tri"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["jenness_window_8tri"] += int(v_in.sum())
-
-            if "sector_adaptive_jenness_integral" in wanted:
-                t0 = perf_counter()
-                a, v, levels = sector_adaptive_jenness_integral_cell_areas(
-                    z,
-                    dx,
-                    dy,
-                    valid,
-                    rel_tol=float(sector_jenness_rel_tol),
-                    abs_tol=float(sector_jenness_abs_tol),
-                    max_level=int(sector_jenness_max_level),
-                    min_samples=int(sector_jenness_min_samples),
-                )
-                acc_t["sector_adaptive_jenness_integral"] += perf_counter() - t0
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["sector_adaptive_jenness_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["sector_adaptive_jenness_integral"] += int(v_in.sum())
-
-                lvl_in = levels[inner][v_in]
-                if lvl_in.size:
-                    sj_level_sum += int(lvl_in.sum(dtype=np.int64))
-                    sj_max_level = max(sj_max_level, int(lvl_in.max(initial=0)))
-                    sj_refined += int((lvl_in > 0).sum())
-
-            if "gradient_multiplier" in wanted:
-                t0 = perf_counter()
-                a, v = gradient_multiplier_cell_areas(z, dx, dy, valid, method=slope_method)
-                acc_t["gradient_multiplier"] += perf_counter() - t0
-                a_in = a[inner]
-                v_in = v[inner]
-                acc_a3d["gradient_multiplier"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["gradient_multiplier"] += int(v_in.sum())
-
-            if "tin_2tri_cell" in wanted:
-                assert p00 is not None and corners_valid is not None
-                t0 = perf_counter()
-                dz_b = p10 - p00
-                dz_c = p11 - p00
-                mag1 = np.sqrt((dz_b * dy) ** 2 + (dx * (dz_b - dz_c)) ** 2 + (dx * dy) ** 2)
-                dz_b2 = p11 - p00
-                dz_c2 = p01 - p00
-                mag2 = np.sqrt((dy * (dz_c2 - dz_b2)) ** 2 + (dx * dz_c2) ** 2 + (dx * dy) ** 2)
-                areas = 0.5 * (mag1 + mag2)
-                areas = np.where(corners_valid, areas, 0.0)
-                v = corners_valid
-                acc_t["tin_2tri_cell"] += perf_counter() - t0
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["tin_2tri_cell"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["tin_2tri_cell"] += int(v_in.sum())
-
-            if "bilinear_patch_integral" in wanted:
-                t0 = perf_counter()
-                assert p00 is not None and corners_valid is not None
-                areas = _bilinear_patch_integral_from_corners(
-                    p00, p10, p01, p11, corners_valid, dx, dy, N=integral_N
-                )
-                v = corners_valid
-                acc_t["bilinear_patch_integral"] += perf_counter() - t0
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["bilinear_patch_integral"] += int(v_in.sum())
-
-            if "adaptive_bilinear_patch_integral" in wanted:
-                t0 = perf_counter()
-                assert p00 is not None and corners_valid is not None
-                areas, levels, subcells = _adaptive_bilinear_patch_integral_from_corners(
-                    p00,
-                    p10,
-                    p01,
-                    p11,
-                    corners_valid,
-                    dx,
-                    dy,
-                    rel_tol=float(adaptive_rel_tol),
-                    abs_tol=float(adaptive_abs_tol),
-                    max_level=int(adaptive_max_level),
-                    min_N=int(adaptive_min_N),
-                    roughness_fastpath=bool(adaptive_roughness_fastpath),
-                    roughness_threshold=adaptive_roughness_threshold,
-                )
-                acc_t["adaptive_bilinear_patch_integral"] += perf_counter() - t0
-                v = corners_valid
-                a_in = areas[inner]
-                v_in = v[inner]
-                acc_a3d["adaptive_bilinear_patch_integral"] += float(a_in[v_in].sum(dtype=np.float64))
-                acc_n["adaptive_bilinear_patch_integral"] += int(v_in.sum())
-
-                lvl_in = levels[inner][v_in]
-                if lvl_in.size:
-                    ad_level_sum += int(lvl_in.sum(dtype=np.int64))
-                    ad_max_level = max(ad_max_level, int(lvl_in.max(initial=0)))
-                    ad_refined += int((lvl_in > 1).sum())
-                    ad_subcells += int(subcells[inner][v_in].sum(dtype=np.int64))
-
-            if progress is not None:
-                progress("compute", block_i, total_blocks)
-
-    results: dict[str, AreaResult] = {}
-    for m in acc_a3d:
-        if m == "adaptive_bilinear_patch_integral":
-            n = int(acc_n[m])
-            results[m] = _adaptive_bilinear_area_result(
-                a3d=acc_a3d[m],
-                valid_cells=n,
-                level_sum=float(ad_level_sum),
-                max_level_used=int(ad_max_level),
-                refined_cells=int(ad_refined),
-                total_subcells=int(ad_subcells),
-            )
-            continue
-        if m == "sector_adaptive_jenness_integral":
-            n = int(acc_n[m])
-            results[m] = _sector_jenness_area_result(
-                a3d=acc_a3d[m],
-                valid_cells=n,
-                level_sum=float(sj_level_sum),
-                max_level_used=int(sj_max_level),
-                refined_cells=int(sj_refined),
-            )
-            continue
-        results[m] = AreaResult(a3d=acc_a3d[m], valid_cells=acc_n[m])
-    return results, acc_t
+    return _compute_methods_on_raster_impl(
+        raster_path,
+        nodata=nodata,
+        methods=methods,
+        jenness_weight=jenness_weight,
+        slope_method=slope_method,
+        integral_N=integral_N,
+        adaptive_rel_tol=adaptive_rel_tol,
+        adaptive_abs_tol=adaptive_abs_tol,
+        adaptive_max_level=adaptive_max_level,
+        adaptive_min_N=adaptive_min_N,
+        adaptive_roughness_fastpath=adaptive_roughness_fastpath,
+        adaptive_roughness_threshold=adaptive_roughness_threshold,
+        sector_jenness_rel_tol=sector_jenness_rel_tol,
+        sector_jenness_abs_tol=sector_jenness_abs_tol,
+        sector_jenness_max_level=sector_jenness_max_level,
+        sector_jenness_min_samples=sector_jenness_min_samples,
+        include_timings=True,
+        progress=progress,
+        workers=workers,
+    )
