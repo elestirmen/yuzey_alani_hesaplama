@@ -41,10 +41,11 @@ METHOD_CHOICES = [
 
 DEFAULT_METHODS = [
     "jenness_window_8tri",
+    "sector_adaptive_jenness_integral",
     "tin_2tri_cell",
     "gradient_multiplier",
     "bilinear_patch_integral",
-    "multiscale_decomposed_area",
+    "adaptive_bilinear_patch_integral",
 ]
 
 

@@ -11,7 +11,7 @@ from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
 from main import RunConfig
-from surface_area.cli import METHOD_CHOICES, build_parser
+from surface_area.cli import DEFAULT_METHODS, METHOD_CHOICES, build_parser
 from surface_area.methods import compute_area_sector_adaptive_jenness_integral, compute_methods_on_raster
 
 
@@ -291,3 +291,15 @@ def test_sector_adaptive_jenness_keeps_existing_registry_and_methods_compatible(
 
     assert set(results) == set(methods)
     assert all(results[m].valid_cells > 0 for m in methods)
+
+
+def test_default_methods_enable_all_six_base_methods() -> None:
+    assert DEFAULT_METHODS == [
+        "jenness_window_8tri",
+        "sector_adaptive_jenness_integral",
+        "tin_2tri_cell",
+        "gradient_multiplier",
+        "bilinear_patch_integral",
+        "adaptive_bilinear_patch_integral",
+    ]
+    assert "multiscale_decomposed_area" not in DEFAULT_METHODS
