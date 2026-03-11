@@ -28,11 +28,11 @@ METHOD_PRESETS: dict[str, list[str]] = {
     "full": list(AVAILABLE_METHODS),
 }
 METHOD_PRESET_NOTES: dict[str, str] = {
-    "default": "Standart secim. Cogu durumda buradan baslanir.",
-    "fast": "En hizli secim. Once hizli test icin uygun.",
-    "balanced": "Hiz ve kalite arasinda orta yol.",
-    "jenness_focus": "Sadece Jenness ile ilgili iki metot.",
-    "full": "Tum metotlar. En yavas secim.",
+    "default": "Programin normal calisma grubu. Hangi metodun nasil davrandigini ilk kez goreceksen buradan baslamak mantiklidir.",
+    "fast": "En hizli grup. Raster buyukse veya once kaba bir fikir edinmek istiyorsan bunu sec.",
+    "balanced": "Hizli metodlara ek olarak bir tane daha ayrintili integral metodu ekler. Cogu gunluk deneme icin iyi orta yol.",
+    "jenness_focus": "Jenness ailesi uzerinde calisiyorsan en anlamli grup budur. Klasik Jenness ile sector-adaptive Jenness'i yan yana kosar.",
+    "full": "Tum metodlari calistirir. En kapsamli secimdir ama sure en cok bunda uzar.",
 }
 
 
@@ -65,56 +65,129 @@ def _resolve_methods(method_choice: str, methods: list[str] | None) -> list[str]
 
 
 config: dict[str, object] = {
-    # Girdi ve cikti klasoru.
+    # ============================================================
+    # 1) TEMEL DOSYALAR
+    # ============================================================
+    # Analiz edilecek DEM/DSM dosyasi.
+    # Buraya GeoTIFF yolunu yaziyorsun.
+    # Ornek: "vadi_dsm.tif"
     "dem": "vadi_dsm.tif",
+    # Sonuclarin yazilacagi klasor.
+    # CSV dosyalari, grafikler ve gecici ciktilar burada olusur.
+    # Ornek: "out_vadi"
     "outdir": "out_vadi",
-    # Hangi cozumlerde calisacagi.
-    # Liste uzarsa toplam sure de uzar.
+    # ============================================================
+    # 2) HANGI COZUMLERDE CALISACAK?
+    # ============================================================
+    # GSD = piksel boyutu / hedef cozum.
+    # Listedeki her deger icin raster yeniden orneklenir ve secili tum metodlar tekrar calisir.
+    # Yani liste ne kadar uzunsa toplam sure de o kadar uzar.
+    # Kisa bir test icin [1, 2, 5] gibi kucuk bir liste daha pratiktir.
     "gsd": [0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
-    # Metot secimi:
-    # - method_choice = hazir grup sec
-    # - methods = elle liste yaz
-    # methods doluysa method_choice dikkate alinmaz.
-    # Pratik ozet:
-    #   default       -> standart grup
-    #   fast          -> hizli grup
-    #   balanced      -> orta yol
-    #   jenness_focus -> sadece Jenness metotlari
-    #   full          -> tum metotlar
+    # ============================================================
+    # 3) HANGI METOTLAR CALISACAK?
+    # ============================================================
+    # method_choice:
+    # Hazir bir metot grubu secmek icin kullanilir.
+    # Cogu kullanici icin en rahat yol budur.
+    #
+    # methods:
+    # Hazir grup yerine metotlari tek tek kendin yazmak istersen bunu kullanirsin.
+    #
+    # ONEMLI:
+    # methods = None ise method_choice devrededir.
+    # methods dolu bir liste ise method_choice artik kullanilmaz.
+    #
+    # Ornek 1:
+    #   "method_choice": "jenness_focus",
+    #   "methods": None
+    # -> sadece Jenness ile ilgili iki metot calisir.
+    #
+    # Ornek 2:
+    #   "method_choice": "default",
+    #   "methods": ["gradient_multiplier", "tin_2tri_cell"]
+    # -> method_choice yok sayilir, sadece bu iki metot calisir.
+    #
+    # Hazir seceneklerin anlami:
+    #   default       -> standart grup, cogu durumda ilk secim
+    #   fast          -> hizli grup, buyuk veri icin iyi
+    #   balanced      -> hiz ve ayrinti arasinda orta yol
+    #   jenness_focus -> Jenness gelistirirken en uygun grup
+    #   full          -> tum metotlar, en yavas secim
     "method_choice": "default",
     "methods": None,
+    # Asagidaki iki alan sadece referans olsun diye burada duruyor.
+    # Program bu listeleri otomatik uretiyor; normalde degistirmen gerekmez.
     "method_choices": list(AVAILABLE_METHODS),
     "method_presets": {name: list(methods) for name, methods in METHOD_PRESETS.items()},
-    # Rasteri yeni GSD'ye indirirken kullanilan yontem.
-    # Genelde bilinear yeterli olur.
+    # ============================================================
+    # 4) YENIDEN ORNEKLEME VE ORTAK AYARLAR
+    # ============================================================
+    # Raster daha kaba veya daha ince bir GSD'ye gecirilirken kullanilan yontem.
+    # bilinear: genel kullanim icin en guvenli secim
+    # nearest : orijinal piksel degerlerini en sert haliyle korur
+    # cubic   : daha yumusak sonuc verir, bazen biraz daha pahali olabilir
     "resampling": "bilinear",
-    # Eğim hesabinin tipi.
-    # Sadece gradient tabanli metotlari etkiler.
+    # Egim hesabinda kullanilacak cekirdek.
+    # Sadece gradient temelli metodlari etkiler:
+    # - gradient_multiplier
+    # - multiscale_decomposed_area
     "slope_method": "horn",
-    # None ise rasterin kendi nodata degeri kullanilir.
+    # Rasterin icindeki nodata degeri yanlissa burada elle verebilirsin.
+    # None birakirsan dosyanin kendi nodata bilgisi kullanilir.
     "nodata": None,
-    # Sadece jenness_window_8tri icin.
+    # ============================================================
+    # 5) YONTEME OZEL AYARLAR
+    # ============================================================
+    # Sadece jenness_window_8tri metodunu etkiler.
+    # Genelde varsayilan deger yeterlidir.
     "jenness_weight": 0.25,
-    # Sadece bilinear_patch_integral icin.
-    # Buyurse daha yavas ama daha ince hesap yapar.
+    # Sadece bilinear_patch_integral icin kullanilir.
+    # N buyurse hucre icini daha kucuk parcalarla hesaplar.
+    # Bu genelde daha ince hesap demektir ama maliyet hizla artar.
+    # Hizli deneme icin 3 veya 5, daha ayrintili deneme icin daha buyuk degerler dusunulebilir.
     "integral_N": 5,
-    # Sadece sector_adaptive_jenness_integral icin.
-    # rel_tol kuculurse daha dikkatli hesap yapar ama yavaslar.
-    # max_level buyurse daha derine boler ama yavaslar.
-    # min_samples ucgen icindeki ornekleme yogunlugudur.
+    # Asagidaki 4 alan sadece sector_adaptive_jenness_integral icin kullanilir.
+    #
+    # rel_tol:
+    # Hata toleransi gibi dusunebilirsin.
+    # Kucuk olursa algoritma "daha emin olayim" deyip daha fazla refine eder.
+    # Sonuc genelde daha dikkatli olur ama sure uzar.
+    #
+    # abs_tol:
+    # Ek bir mutlak tolerans siniri.
+    # Cogu durumda 0.0 birakmak yeterlidir.
+    #
+    # max_level:
+    # Ucgenleri en fazla kac seviye bolmesine izin verdigini belirler.
+    # Buyuk olursa zor hucrelerde daha derine iner, bu da daha yavas olabilir.
+    #
+    # min_samples:
+    # Bir ucgen icinde kac quadrature ornegi kullanilacagina etki eder.
+    # Dusurmek her zaman hiz kazandirmayabilir.
     "sector_jenness_rel_tol": 1e-4,
     "sector_jenness_abs_tol": 0.0,
     "sector_jenness_max_level": 5,
     "sector_jenness_min_samples": 3,
-    # Sadece multiscale_decomposed_area icin.
-    # mult = GSD kati, m = dogrudan metre.
+    # Asagidaki 2 alan sadece multiscale_decomposed_area icin anlamlidir.
+    #
+    # sigma_mode:
+    # mult -> sigma_m listesindeki degerler GSD'nin kati gibi okunur.
+    #         Ornek: GSD=2 ise sigma=2.0 degeri 4 metre olur.
+    # m    -> sigma_m listesindeki degerler dogrudan metre kabul edilir.
+    #
+    # sigma_m:
+    # Kullanilacak sigma listesi.
     "sigma_mode": "mult",
     "sigma_m": [2.0, 5.0],
-    # Grafik uret.
+    # Hesap bittiginde grafik PNG'leri de olussun mu?
     "plots": True,
-    # Ara GeoTIFF dosyalarini sakla.
+    # Her GSD icin olusan ara GeoTIFF dosyalari diskte kalsin mi?
+    # False ise is bitince silinir.
     "keep_resampled": False,
-    # Paralel worker sayisi.
+    # Kac worker process kullanilsin?
+    # Buyuk sayi her zaman daha hizli olmaz; raster I/O bazen darboaz olur.
+    # Emin degilsen once 1, 2, 4 gibi degerlerle deneme yapmak daha dogrudur.
     "workers": 8,
 }
 
@@ -125,93 +198,160 @@ class RunConfig:
 
     dem: str = field(
         default="vadi_dsm.tif",
-        metadata={"help": "Input DEM/DSM GeoTIFF path (relative to workspace or absolute path)."},
+        metadata={"help": "Analiz edilecek DEM/DSM GeoTIFF dosyasi. Goreli veya tam yol verebilirsin."},
     )
     outdir: str = field(
         default="out_vadi",
-        metadata={"help": "Output directory path (created if needed)."},
+        metadata={"help": "Sonuclarin yazilacagi klasor. Yoksa otomatik olusturulur."},
     )
     gsd: list[float] = field(
         default_factory=lambda: [0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
         metadata={
-            "help": "Calisacagi GSD listesi. Liste uzarsa sure uzar. Ornek: [0.5, 1, 2, 5]."
+            "help": (
+                "Hedef GSD listesi. Listedeki her deger icin raster yeniden orneklenir ve secili tum metotlar tekrar calisir. "
+                "Bu yuzden liste uzadikca toplam sure artar. Hizli deneme icin [1, 2, 5] gibi kisa bir liste iyidir."
+            )
         },
     )
     method_choice: str = field(
         default="default",
         metadata={
-            "help": f"Hazir metot grubu. Secenekler: {', '.join(METHOD_PRESETS)}. methods doluysa bu kullanilmaz."
+            "help": (
+                f"Hazir metot grubu. Secenekler: {', '.join(METHOD_PRESETS)}. "
+                "methods=None ise bu alan kullanilir. Elle tek tek metot yazmak istemiyorsan en kolay secim budur."
+            )
         },
     )
     methods: list[str] | None = field(
         default_factory=lambda: None,
         metadata={
-            "help": f"Elle metot listesi. Doluysa method_choice yerine bu calisir. Secenekler: {', '.join(AVAILABLE_METHODS)}"
+            "help": (
+                f"Elle metot listesi. Doluysa method_choice tamamen devre disi kalir ve sadece buradaki metotlar calisir. "
+                f"Kullanilabilir adlar: {', '.join(AVAILABLE_METHODS)}"
+            )
         },
     )
     resampling: str = field(
         default="bilinear",
         metadata={
-            "help": "Yeniden ornekleme tipi: bilinear, nearest, cubic. Genelde bilinear yeterli."
+            "help": (
+                "Rasteri yeni GSD'ye gecirirken kullanilan yeniden ornekleme yontemi. "
+                "bilinear genel kullanim icin iyi varsayilandir; nearest daha serttir; cubic daha yumusak sonuc verebilir."
+            )
         },
     )
     slope_method: str = field(
         default="horn",
         metadata={
-            "help": "Egim hesabi tipi: horn veya zt. Sadece gradient tabanli metotlari etkiler."
+            "help": (
+                "Egim hesabinda kullanilan yontem: horn veya zt. "
+                "Bu ayar sadece gradient_multiplier ve multiscale_decomposed_area gibi gradient tabanli metodlari etkiler."
+            )
         },
     )
     nodata: float | None = field(
         default=None,
-        metadata={"help": "Nodata override. None ise rasterin kendi nodata degeri kullanilir."},
+        metadata={
+            "help": (
+                "Nodata degerini elle vermek icin kullanilir. Raster dosyasinin nodata bilgisi yanlissa burada duzeltebilirsin. "
+                "None ise dosyanin icindeki nodata kullanilir."
+            )
+        },
     )
     jenness_weight: float = field(
         default=0.25,
-        metadata={"help": "Sadece jenness_window_8tri icin kullanilir."},
+        metadata={
+            "help": (
+                "Bu parametre sadece jenness_window_8tri metodunu etkiler. "
+                "Genelde varsayilan deger yeterlidir; ancak bu metodun merkez agirligini degistirmek istersen buraya dokunursun."
+            )
+        },
     )
     integral_N: int = field(
         default=5,
         metadata={
-            "help": "Sadece bilinear_patch_integral icin. Buyurse daha ince ama daha yavas hesap yapar."
+            "help": (
+                "Bu parametre sadece bilinear_patch_integral icin kullanilir. "
+                "Hucre ici integrali kac alt parcaya bolerek hesaplayacagini belirler. "
+                "N buyudukce hesap daha ince olur ama sure de belirgin sekilde artar."
+            )
         },
     )
     sector_jenness_rel_tol: float = field(
         default=1e-4,
-        metadata={"help": "Sadece sector_adaptive_jenness_integral icin. Kuculurse daha yavas ama daha dikkatli hesaplar."},
+        metadata={
+            "help": (
+                "Bu parametre sadece sector_adaptive_jenness_integral icin kullanilir. "
+                "Algoritmanin ne kadar kolay duracagini belirleyen goreli toleranstir. "
+                "Deger kuculdukce daha fazla refine yapar; bu genelde daha pahali ama daha dikkatli hesap demektir."
+            )
+        },
     )
     sector_jenness_abs_tol: float = field(
         default=0.0,
-        metadata={"help": "Sadece sector_adaptive_jenness_integral icin. Genelde 0.0 birakilir."},
+        metadata={
+            "help": (
+                "Bu parametre sadece sector_adaptive_jenness_integral icin kullanilir. "
+                "Mutlak toleranstir. Cogu durumda 0.0 olarak birakmak yeterlidir."
+            )
+        },
     )
     sector_jenness_max_level: int = field(
         default=5,
         metadata={
-            "help": "Sadece sector_adaptive_jenness_integral icin. Buyurse daha derine boler ve yavaslar."
+            "help": (
+                "Bu parametre sadece sector_adaptive_jenness_integral icin kullanilir. "
+                "Adaptif bolmenin en fazla kac seviye derine inebilecegini belirler. "
+                "Buyuk deger zor hucrelerde daha ayrintili hesap demektir, ama runtime da artabilir."
+            )
         },
     )
     sector_jenness_min_samples: int = field(
         default=3,
-        metadata={"help": "Sadece sector_adaptive_jenness_integral icin. Ucgen icindeki ornekleme yogunlugu."},
+        metadata={
+            "help": (
+                "Bu parametre sadece sector_adaptive_jenness_integral icin kullanilir. "
+                "Ucgen icindeki quadrature ornekleme yogunlugunu etkiler. "
+                "Dusuk deger her zaman daha hizli sonuc vermeyebilir."
+            )
+        },
     )
     sigma_mode: str = field(
         default="mult",
-        metadata={"help": "Sadece multiscale_decomposed_area icin. mult = GSD kati, m = metre."},
+        metadata={
+            "help": (
+                "Bu parametre sadece multiscale_decomposed_area icin anlamlidir. "
+                "'mult' secilirse sigma_m degerleri GSD'nin kati gibi yorumlanir; 'm' secilirse dogrudan metre kabul edilir."
+            )
+        },
     )
     sigma_m: list[float] = field(
         default_factory=lambda: [2.0, 5.0],
-        metadata={"help": "Sadece multiscale_decomposed_area icin sigma listesi."},
+        metadata={
+            "help": (
+                "Bu parametre sadece multiscale_decomposed_area icin kullanilir. "
+                "Kullanilacak sigma degerlerinin listesidir; anlamini sigma_mode belirler."
+            )
+        },
     )
     plots: bool = field(
         default=True,
-        metadata={"help": "True ise grafik uretir."},
+        metadata={"help": "True ise hesap bittikten sonra grafik PNG dosyalari da uretir."},
     )
     keep_resampled: bool = field(
         default=False,
-        metadata={"help": "True ise ara GeoTIFF dosyalari silinmez."},
+        metadata={
+            "help": "True ise her GSD icin olusan ara GeoTIFF dosyalari saklanir. Debug icin yararlidir, disk kullanimini artirir."
+        },
     )
     workers: int = field(
         default=1,
-        metadata={"help": "Paralel worker sayisi."},
+        metadata={
+            "help": (
+                "Paralel worker process sayisi. Daha buyuk deger bazen hizlandirir ama her veri setinde ayni etkiyi vermez. "
+                "Emin degilsen once 1, 2 veya 4 ile deneme yapmak daha guvenlidir."
+            )
+        },
     )
 
     def resolved_methods(self) -> list[str]:
