@@ -12,7 +12,13 @@ from rasterio.transform import from_origin
 
 from main import RunConfig
 from surface_area.cli import DEFAULT_METHODS, METHOD_CHOICES, build_parser
-from surface_area.methods import compute_area_sector_adaptive_jenness_integral, compute_methods_on_raster
+from surface_area.methods import (
+    _integrate_sector_jenness_cell,
+    _sector_jenness_level1_fastpath,
+    _sector_jenness_triangle_rule,
+    compute_area_sector_adaptive_jenness_integral,
+    compute_methods_on_raster,
+)
 
 
 def _centered_xy(rows: int, cols: int, *, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray]:
@@ -140,6 +146,45 @@ def test_sector_adaptive_jenness_skips_incomplete_3x3_stencils() -> None:
     assert res.valid_cells == expected_valid_cells
     assert math.isfinite(res.a3d)
     assert _relative_error(res.a3d / a2d, expected_ratio) < 1e-12
+
+
+def test_sector_adaptive_jenness_level1_fastpath_matches_recursive() -> None:
+    coeffs = np.array(
+        [
+            [0.004, 0.006, 0.002, 0.08, -0.03, 5.0],
+            [-0.003, 0.002, -0.001, 0.04, 0.02, 1.5],
+            [0.001, -0.002, 0.0005, -0.01, 0.05, -2.0],
+        ],
+        dtype=np.float64,
+    )
+    dx = dy = 1.0
+    bary, weights = _sector_jenness_triangle_rule(3)
+
+    accepted, areas = _sector_jenness_level1_fastpath(
+        coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=1e-4,
+        abs_tol=0.0,
+        max_level=1,
+    )
+
+    assert accepted.all()
+    for i, coeff in enumerate(coeffs):
+        area, level = _integrate_sector_jenness_cell(
+            coeff,
+            dx,
+            dy,
+            bary,
+            weights,
+            rel_tol=1e-4,
+            abs_tol=0.0,
+            max_level=1,
+        )
+        assert level == 1
+        assert abs(areas[i] - area) < 1e-12
 
 
 def test_sector_adaptive_jenness_cli_smoke_writes_results_and_metadata(tmp_path: Path) -> None:

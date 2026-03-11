@@ -278,6 +278,22 @@ def _triangle_area_2d(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> float:
     return 0.5 * abs(float(v1[0] * v2[1] - v1[1] * v2[0]))
 
 
+def _subdivide_triangle(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], ...]:
+    m01 = 0.5 * (p0 + p1)
+    m12 = 0.5 * (p1 + p2)
+    m20 = 0.5 * (p2 + p0)
+    return (
+        (p0, m01, m20),
+        (m01, p1, m12),
+        (m20, m12, p2),
+        (m01, m12, m20),
+    )
+
+
 @lru_cache(maxsize=16)
 def _sector_jenness_triangles(dx: float, dy: float) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], ...]:
     """Eight triangular sectors partitioning the current cell footprint exactly."""
@@ -362,21 +378,83 @@ def _triangle_quadrature_integral(
     bary: np.ndarray,
     weights: np.ndarray,
 ) -> float:
-    area = _triangle_area_2d(p0, p1, p2)
+    x0 = float(p0[0])
+    y0 = float(p0[1])
+    x1 = float(p1[0])
+    y1 = float(p1[1])
+    x2 = float(p2[0])
+    y2 = float(p2[1])
+
+    area = 0.5 * abs((x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0))
     if area <= 0.0:
         return 0.0
 
-    xy = (
-        bary[:, 0:1] * p0[None, :]
-        + bary[:, 1:2] * p1[None, :]
-        + bary[:, 2:3] * p2[None, :]
-    )
-    vals = np.empty((weights.size,), dtype=np.float64)
-    for i, pt in enumerate(xy):
-        vals[i] = _quadratic_area_integrand(coeff, float(pt[0]), float(pt[1]))
-    if not np.all(np.isfinite(vals)):
-        return float("nan")
+    # Evaluate all quadrature points at once to avoid per-point Python overhead.
+    x = bary[:, 0] * x0 + bary[:, 1] * x1 + bary[:, 2] * x2
+    y = bary[:, 0] * y0 + bary[:, 1] * y1 + bary[:, 2] * y2
+
+    a = float(coeff[0])
+    b = float(coeff[1])
+    c = float(coeff[2])
+    d = float(coeff[3])
+    e = float(coeff[4])
+    if weights.size <= 3:
+        total = 0.0
+        for i in range(weights.size):
+            bx = float(bary[i, 0])
+            by = float(bary[i, 1])
+            bz = float(bary[i, 2])
+            xi = bx * x0 + by * x1 + bz * x2
+            yi = bx * y0 + by * y1 + bz * y2
+            dzdx_i = (2.0 * a * xi) + (c * yi) + d
+            dzdy_i = (2.0 * b * yi) + (c * xi) + e
+            total += float(weights[i]) * math.sqrt(1.0 + dzdx_i * dzdx_i + dzdy_i * dzdy_i)
+        return area * total
+
+    dzdx = (2.0 * a * x) + (c * y) + d
+    dzdy = (2.0 * b * y) + (c * x) + e
+    vals = np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy)
     return area * float(np.dot(weights, vals))
+
+
+def _triangle_quadrature_integral_batch(
+    coeffs: np.ndarray,
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    bary: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Evaluate one triangle quadrature rule for many quadratic surfaces at once."""
+    if coeffs.ndim != 2 or coeffs.shape[1] < 5:
+        raise ValueError("coeffs must have shape (n, >=5)")
+    if coeffs.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float64)
+
+    x0 = float(p0[0])
+    y0 = float(p0[1])
+    x1 = float(p1[0])
+    y1 = float(p1[1])
+    x2 = float(p2[0])
+    y2 = float(p2[1])
+
+    area = 0.5 * abs((x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0))
+    if area <= 0.0:
+        return np.zeros((coeffs.shape[0],), dtype=np.float64)
+
+    x = bary[:, 0] * x0 + bary[:, 1] * x1 + bary[:, 2] * x2
+    y = bary[:, 0] * y0 + bary[:, 1] * y1 + bary[:, 2] * y2
+
+    a = coeffs[:, 0:1]
+    b = coeffs[:, 1:2]
+    c = coeffs[:, 2:3]
+    d = coeffs[:, 3:4]
+    e = coeffs[:, 4:5]
+
+    dzdx = (2.0 * a * x[None, :]) + (c * y[None, :]) + d
+    dzdy = (2.0 * b * y[None, :]) + (c * x[None, :]) + e
+    vals = np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy)
+    return area * (vals @ weights)
 
 
 def _adaptive_triangle_integral(
@@ -404,15 +482,7 @@ def _adaptive_triangle_integral(
     if level >= max_level:
         return coarse_here, level
 
-    m01 = 0.5 * (p0 + p1)
-    m12 = 0.5 * (p1 + p2)
-    m20 = 0.5 * (p2 + p0)
-    children = (
-        (p0, m01, m20),
-        (m01, p1, m12),
-        (m20, m12, p2),
-        (m01, m12, m20),
-    )
+    children = _subdivide_triangle(p0, p1, p2)
     child_coarse = [
         _triangle_quadrature_integral(coeff, c0, c1, c2, bary, weights)
         for c0, c1, c2 in children
@@ -481,6 +551,45 @@ def _sector_jenness_planar_fastpath(
     tol = np.maximum(float(abs_tol), float(rel_tol) * plane_area)
     use_plane = (cell_area_2d * max_delta) <= tol
     return use_plane, plane_area
+
+
+def _sector_jenness_level1_fastpath(
+    coeffs: np.ndarray,
+    dx: float,
+    dy: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    *,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve cells that converge after the first adaptive refinement step."""
+    n = int(coeffs.shape[0])
+    if n <= 0 or max_level <= 0:
+        return np.zeros((n,), dtype=bool), np.zeros((n,), dtype=np.float64)
+
+    accepted = np.ones((n,), dtype=bool)
+    area = np.zeros((n,), dtype=np.float64)
+    sector_abs_tol = float(abs_tol) / 8.0 if abs_tol > 0 else 0.0
+
+    for p0, p1, p2 in _sector_jenness_triangles(float(dx), float(dy)):
+        coarse = _triangle_quadrature_integral_batch(coeffs, p0, p1, p2, bary, weights)
+
+        fine = np.zeros((n,), dtype=np.float64)
+        for c0, c1, c2 in _subdivide_triangle(p0, p1, p2):
+            fine += _triangle_quadrature_integral_batch(coeffs, c0, c1, c2, bary, weights)
+
+        finite = np.isfinite(coarse) & np.isfinite(fine)
+        if max_level > 1:
+            tol = np.maximum(sector_abs_tol, float(rel_tol) * np.abs(fine))
+            accepted &= finite & (np.abs(fine - coarse) <= tol)
+        else:
+            accepted &= finite
+        area += fine
+
+    area[~accepted] = 0.0
+    return accepted, area
 
 
 def _integrate_sector_jenness_cell(
@@ -722,7 +831,23 @@ def sector_adaptive_jenness_integral_cell_areas(
 
     active_idx = valid_flat_idx[~use_plane]
     active_coeffs = coeff_v[~use_plane]
-    for flat_idx, coeff in zip(active_idx.tolist(), active_coeffs, strict=False):
+    fast_mask, fast_area = _sector_jenness_level1_fastpath(
+        active_coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=rel_tol,
+        abs_tol=abs_tol,
+        max_level=max_level,
+    )
+    if np.any(fast_mask):
+        center_area.reshape(-1)[active_idx[fast_mask]] = fast_area[fast_mask]
+        center_levels.reshape(-1)[active_idx[fast_mask]] = np.uint8(1)
+
+    fallback_idx = active_idx[~fast_mask]
+    fallback_coeffs = active_coeffs[~fast_mask]
+    for flat_idx, coeff in zip(fallback_idx.tolist(), fallback_coeffs, strict=False):
         area, level_used = _integrate_sector_jenness_cell(
             coeff,
             dx,
