@@ -14,7 +14,9 @@ from main import RunConfig
 from surface_area.cli import DEFAULT_METHODS, METHOD_CHOICES, build_parser
 from surface_area.methods import (
     _integrate_sector_jenness_cell,
+    _integrate_sector_jenness_cell_from_level1,
     _sector_jenness_level1_fastpath,
+    _sector_jenness_level1_presolve,
     _sector_jenness_triangle_rule,
     compute_area_sector_adaptive_jenness_integral,
     compute_methods_on_raster,
@@ -185,6 +187,58 @@ def test_sector_adaptive_jenness_level1_fastpath_matches_recursive() -> None:
         )
         assert level == 1
         assert abs(areas[i] - area) < 1e-12
+
+
+def test_sector_adaptive_jenness_level1_resume_matches_recursive() -> None:
+    coeffs = np.array(
+        [
+            [0.8, 0.6, 0.4, 0.08, -0.03, 5.0],
+            [-0.7, 0.5, -0.35, 0.04, 0.02, 1.5],
+            [0.65, -0.45, 0.3, -0.01, 0.05, -2.0],
+        ],
+        dtype=np.float64,
+    )
+    dx = dy = 1.0
+    bary, weights = _sector_jenness_triangle_rule(3)
+
+    accepted, _, sector_accepted, sector_fine, sector_child_coarse = _sector_jenness_level1_presolve(
+        coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=1e-4,
+        abs_tol=0.0,
+        max_level=5,
+    )
+
+    assert (~accepted).any()
+    for i, coeff in enumerate(coeffs):
+        expected_area, expected_level = _integrate_sector_jenness_cell(
+            coeff,
+            dx,
+            dy,
+            bary,
+            weights,
+            rel_tol=1e-4,
+            abs_tol=0.0,
+            max_level=5,
+        )
+        resumed_area, resumed_level = _integrate_sector_jenness_cell_from_level1(
+            coeff,
+            dx,
+            dy,
+            bary,
+            weights,
+            rel_tol=1e-4,
+            abs_tol=0.0,
+            max_level=5,
+            sector_accepted=sector_accepted[:, i],
+            sector_fine=sector_fine[:, i],
+            sector_child_coarse=sector_child_coarse[:, :, i],
+        )
+        assert resumed_level == expected_level
+        assert abs(resumed_area - expected_area) < 1e-12
 
 
 def test_sector_adaptive_jenness_cli_smoke_writes_results_and_metadata(tmp_path: Path) -> None:

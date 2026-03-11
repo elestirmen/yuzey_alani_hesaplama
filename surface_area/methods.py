@@ -457,6 +457,67 @@ def _triangle_quadrature_integral_batch(
     return area * (vals @ weights)
 
 
+def _sector_jenness_level1_presolve(
+    coeffs: np.ndarray,
+    dx: float,
+    dy: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    *,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Precompute level-1 sector refinement results for many cells.
+
+    Returns:
+      cell_accepted: (n,) bool, True where every sector converged at level 1
+      cell_area: (n,) float64, sum of level-1 sector areas for accepted cells
+      sector_accepted: (8, n) bool, per-sector level-1 convergence flags
+      sector_fine: (8, n) float64, per-sector level-1 fine areas
+      sector_child_coarse: (8, 4, n) float64, child triangle coarse values
+    """
+    n = int(coeffs.shape[0])
+    if n <= 0 or max_level <= 0:
+        return (
+            np.zeros((n,), dtype=bool),
+            np.zeros((n,), dtype=np.float64),
+            np.zeros((0, n), dtype=bool),
+            np.zeros((0, n), dtype=np.float64),
+            np.zeros((0, 4, n), dtype=np.float64),
+        )
+
+    sectors = _sector_jenness_triangles(float(dx), float(dy))
+    sector_count = len(sectors)
+    sector_accepted = np.ones((sector_count, n), dtype=bool)
+    sector_fine = np.zeros((sector_count, n), dtype=np.float64)
+    sector_child_coarse = np.zeros((sector_count, 4, n), dtype=np.float64)
+    sector_abs_tol = float(abs_tol) / float(sector_count) if abs_tol > 0 else 0.0
+
+    for sector_i, (p0, p1, p2) in enumerate(sectors):
+        coarse = _triangle_quadrature_integral_batch(coeffs, p0, p1, p2, bary, weights)
+        child_sum = np.zeros((n,), dtype=np.float64)
+        child_finite = np.ones((n,), dtype=bool)
+        for child_i, (c0, c1, c2) in enumerate(_subdivide_triangle(p0, p1, p2)):
+            child_area = _triangle_quadrature_integral_batch(coeffs, c0, c1, c2, bary, weights)
+            sector_child_coarse[sector_i, child_i] = child_area
+            child_sum += child_area
+            child_finite &= np.isfinite(child_area)
+
+        finite = np.isfinite(coarse) & child_finite & np.isfinite(child_sum)
+        if max_level > 1:
+            tol = np.maximum(sector_abs_tol, float(rel_tol) * np.abs(child_sum))
+            sector_accepted[sector_i] = finite & (np.abs(child_sum - coarse) <= tol)
+        else:
+            sector_accepted[sector_i] = finite
+        sector_fine[sector_i] = child_sum
+
+    cell_accepted = sector_accepted.all(axis=0)
+    cell_area = sector_fine.sum(axis=0, dtype=np.float64)
+    cell_area[~cell_accepted] = 0.0
+    return cell_accepted, cell_area, sector_accepted, sector_fine, sector_child_coarse
+
+
 def _adaptive_triangle_integral(
     coeff: np.ndarray,
     p0: np.ndarray,
@@ -565,30 +626,16 @@ def _sector_jenness_level1_fastpath(
     max_level: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve cells that converge after the first adaptive refinement step."""
-    n = int(coeffs.shape[0])
-    if n <= 0 or max_level <= 0:
-        return np.zeros((n,), dtype=bool), np.zeros((n,), dtype=np.float64)
-
-    accepted = np.ones((n,), dtype=bool)
-    area = np.zeros((n,), dtype=np.float64)
-    sector_abs_tol = float(abs_tol) / 8.0 if abs_tol > 0 else 0.0
-
-    for p0, p1, p2 in _sector_jenness_triangles(float(dx), float(dy)):
-        coarse = _triangle_quadrature_integral_batch(coeffs, p0, p1, p2, bary, weights)
-
-        fine = np.zeros((n,), dtype=np.float64)
-        for c0, c1, c2 in _subdivide_triangle(p0, p1, p2):
-            fine += _triangle_quadrature_integral_batch(coeffs, c0, c1, c2, bary, weights)
-
-        finite = np.isfinite(coarse) & np.isfinite(fine)
-        if max_level > 1:
-            tol = np.maximum(sector_abs_tol, float(rel_tol) * np.abs(fine))
-            accepted &= finite & (np.abs(fine - coarse) <= tol)
-        else:
-            accepted &= finite
-        area += fine
-
-    area[~accepted] = 0.0
+    accepted, area, _, _, _ = _sector_jenness_level1_presolve(
+        coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=rel_tol,
+        abs_tol=abs_tol,
+        max_level=max_level,
+    )
     return accepted, area
 
 
@@ -624,6 +671,59 @@ def _integrate_sector_jenness_cell(
                 max_level=max_level,
                 level=0,
             )
+        if not math.isfinite(area):
+            return float("nan"), level_used
+        total += area
+        level_used = max(level_used, sector_level)
+    return total, level_used
+
+
+def _integrate_sector_jenness_cell_from_level1(
+    coeff: np.ndarray,
+    dx: float,
+    dy: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    *,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+    sector_accepted: np.ndarray,
+    sector_fine: np.ndarray,
+    sector_child_coarse: np.ndarray,
+) -> tuple[float, int]:
+    """Continue adaptive sector integration from precomputed level-1 results."""
+    total = 0.0
+    level_used = 0
+    sector_abs_tol = float(abs_tol) / 8.0 if abs_tol > 0 else 0.0
+    child_abs_tol = sector_abs_tol * 0.25
+
+    for sector_i, (p0, p1, p2) in enumerate(_sector_jenness_triangles(float(dx), float(dy))):
+        if bool(sector_accepted[sector_i]):
+            area = float(sector_fine[sector_i])
+            sector_level = 1
+        else:
+            area = 0.0
+            sector_level = 1
+            for child_i, (c0, c1, c2) in enumerate(_subdivide_triangle(p0, p1, p2)):
+                child_area, child_level = _adaptive_triangle_integral(
+                    coeff,
+                    c0,
+                    c1,
+                    c2,
+                    bary,
+                    weights,
+                    rel_tol=rel_tol,
+                    abs_tol=child_abs_tol,
+                    max_level=max_level,
+                    level=1,
+                    coarse=float(sector_child_coarse[sector_i, child_i]),
+                )
+                if not math.isfinite(child_area):
+                    return float("nan"), level_used
+                area += child_area
+                sector_level = max(sector_level, child_level)
+
         if not math.isfinite(area):
             return float("nan"), level_used
         total += area
@@ -831,7 +931,7 @@ def sector_adaptive_jenness_integral_cell_areas(
 
     active_idx = valid_flat_idx[~use_plane]
     active_coeffs = coeff_v[~use_plane]
-    fast_mask, fast_area = _sector_jenness_level1_fastpath(
+    fast_mask, fast_area, sector_fast, sector_fine, sector_child_coarse = _sector_jenness_level1_presolve(
         active_coeffs,
         dx,
         dy,
@@ -847,8 +947,11 @@ def sector_adaptive_jenness_integral_cell_areas(
 
     fallback_idx = active_idx[~fast_mask]
     fallback_coeffs = active_coeffs[~fast_mask]
-    for flat_idx, coeff in zip(fallback_idx.tolist(), fallback_coeffs, strict=False):
-        area, level_used = _integrate_sector_jenness_cell(
+    fallback_sector_fast = sector_fast[:, ~fast_mask]
+    fallback_sector_fine = sector_fine[:, ~fast_mask]
+    fallback_child_coarse = sector_child_coarse[:, :, ~fast_mask]
+    for cell_i, (flat_idx, coeff) in enumerate(zip(fallback_idx.tolist(), fallback_coeffs, strict=False)):
+        area, level_used = _integrate_sector_jenness_cell_from_level1(
             coeff,
             dx,
             dy,
@@ -857,6 +960,9 @@ def sector_adaptive_jenness_integral_cell_areas(
             rel_tol=rel_tol,
             abs_tol=abs_tol,
             max_level=max_level,
+            sector_accepted=fallback_sector_fast[:, cell_i],
+            sector_fine=fallback_sector_fine[:, cell_i],
+            sector_child_coarse=fallback_child_coarse[:, :, cell_i],
         )
         if math.isfinite(area):
             center_area.reshape(-1)[flat_idx] = area

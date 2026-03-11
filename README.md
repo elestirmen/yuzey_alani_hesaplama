@@ -504,7 +504,7 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 | `--adaptive_roughness_threshold` | `float` | Otomatik | Fast-path eşiği (opsiyonel) |
 | `--sector_jenness_rel_tol` | `float` | `1e-4` | Sector adaptive Jenness bağıl tolerans |
 | `--sector_jenness_abs_tol` | `float` | `0.0` | Sector adaptive Jenness mutlak tolerans |
-| `--sector_jenness_max_level` | `int` | `5` | Sector adaptive Jenness maksimum inceltme seviyesi |
+| `--sector_jenness_max_level` | `int` | `5` | Sector adaptive Jenness maksimum inceltme seviyesi (`level-0`=bölmesiz, `level-1`=4 alt üçgen, `level-2`=16, ...) |
 | `--sector_jenness_min_samples` | `int` | `3` | Sector adaptive Jenness için minimum triangle quadrature eşiği |
 | `--sigma_mode` | `str` | `mult` | Multiscale sigma yorumlama modu |
 | `--sigma_m` | `list[float]` | `2.0, 5.0` | Multiscale sigma değerleri |
@@ -688,6 +688,12 @@ eklenmiştir.
 | `--sector_jenness_abs_tol` | `0.0` | Mutlak tolerans |
 | `--sector_jenness_max_level` | `5` | Maksimum recursive subdivision seviyesi |
 | `--sector_jenness_min_samples` | `3` | Üçgen quadrature örnek sayısı eşiği |
+
+Seviye yorumu:
+- `level-0`: sektör tek üçgen olarak hesaplanır.
+- `level-1`: aynı üçgen 4 alt üçgene bölünür.
+- `level-2`: toplam 16 alt üçgen değerlendirilir.
+- `--sector_jenness_max_level`, bu derinlik için üst sınırdır.
 
 ```bash
 --methods sector_adaptive_jenness_integral \
@@ -891,6 +897,21 @@ A_cell = sum_over_8_sectors integral integral sqrt(1 + (dz/dx)^2 + (dz/dy)^2) dA
 5. İntegrasyon adaptif triangle subdivision ile yapılır. Quadratic terimler ihmal edilebilir
    düzeydeyse yöntem recursive çözüm yerine analytic plane fast-path kullanır.
 
+Refinement level ne demektir?
+
+```text
+level-0: sektör tek üçgen olarak hesaplanır
+level-1: aynı üçgen 4 alt üçgene bölünür
+level-2: her alt üçgen tekrar 4'e bölünür -> toplam 16 alt üçgen
+level-3: toplam 64 alt üçgen
+...
+```
+
+- `level-0`, hiç bölmeden yapılan ilk kaba değerlendirmedir.
+- `level-1`, ilk adaptif bölme seviyesidir; pratikte birçok hücre burada yeterince iyi yakınsar.
+- `--sector_jenness_max_level`, bu subdivision derinliği için üst sınırı belirler.
+- CSV'deki `sector_jenness_avg_level` ve `sector_jenness_max_level_used` bu hiyerarşiyi raporlar.
+
 Klasik Jenness'ten farkı:
 - Komşu hücre merkezlerinden kurulan 3B triangle fan kullanmaz.
 - `weight=0.25` gibi sabit bir paylaştırma katsayısına ihtiyaç duymaz.
@@ -1077,6 +1098,11 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `sector_jenness_avg_level` | float | Hücre başına kullanılan ortalama maksimum refinement seviyesi |
 | `sector_jenness_max_level_used` | int | Kullanılan maksimum refinement seviyesi |
 | `sector_jenness_refined_fraction` | float | En az bir recursive refinement alan hücre oranı |
+
+Buradaki seviye, sector adaptive subdivision seviyesidir:
+- `0` = bölmesiz ilk değerlendirme
+- `1` = ilk 4'lü bölme
+- `2` = ikinci bölme (16 alt üçgen)
 
 **Multiscale için ek kolonlar:**
 
