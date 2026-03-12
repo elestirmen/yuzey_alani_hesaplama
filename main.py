@@ -19,6 +19,7 @@ METHOD_PRESETS: dict[str, list[str]] = {
         "gradient_multiplier",
         "tin_2tri_cell",
         "jenness_window_8tri",
+        "sector_adaptive_jenness_integral",
         "bilinear_patch_integral",
     ],
     "jenness_focus": [
@@ -28,9 +29,15 @@ METHOD_PRESETS: dict[str, list[str]] = {
     "full": list(AVAILABLE_METHODS),
 }
 METHOD_PRESET_NOTES: dict[str, str] = {
-    "default": "Programin normal calisma grubu. Hangi metodun nasil davrandigini ilk kez goreceksen buradan baslamak mantiklidir.",
+    "default": (
+        "Ana karsilastirma grubu. Klasik taban cizgisini korurken sector-adaptive Jenness onerisine "
+        "odaklanir; bilinear integral metodlarini varsayilan sete katmaz."
+    ),
     "fast": "En hizli grup. Raster buyukse veya once kaba bir fikir edinmek istiyorsan bunu sec.",
-    "balanced": "Hizli metodlara ek olarak bir tane daha ayrintili integral metodu ekler. Cogu gunluk deneme icin iyi orta yol.",
+    "balanced": (
+        "Ana calisma disinda ek bir integral benchmark da gormek istersen bunu sec. "
+        "Bilinear patch'i bilerek acikca ekler."
+    ),
     "jenness_focus": "Jenness ailesi uzerinde calisiyorsan en anlamli grup budur. Klasik Jenness ile sector-adaptive Jenness'i yan yana kosar.",
     "full": "Tum metodlari calistirir. En kapsamli secimdir ama sure en cok bunda uzar.",
 }
@@ -132,9 +139,9 @@ config: dict[str, object] = {
     # -> method_choice yok sayilir, sadece bu iki metot calisir.
     #
     # Hazir seceneklerin anlami:
-    #   default       -> standart grup, cogu durumda ilk secim
+    #   default       -> ana karsilastirma grubu, sector-adaptive odakli
     #   fast          -> hizli grup, buyuk veri icin iyi
-    #   balanced      -> hiz ve ayrinti arasinda orta yol
+    #   balanced      -> default + bilinear integral benchmark
     #   jenness_focus -> Jenness gelistirirken en uygun grup
     #   full          -> tum metotlar, en yavas secim
     "method_choice": "default",

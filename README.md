@@ -490,7 +490,7 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 | Parametre | Tip | Varsayılan | Açıklama |
 |:---------:|:---:|:----------:|:---------|
 | `--gsd` | `list[float]` | `0.1, 0.5, 1, 2, 5, 10, 20, 50` | Hedef GSD (Ground Sample Distance) değerleri metre cinsinden |
-| `--methods` | `list[str]` | `jenness_window_8tri, sector_adaptive_jenness_integral, tin_2tri_cell, gradient_multiplier, bilinear_patch_integral, adaptive_bilinear_patch_integral` | Çalıştırılacak hesaplama yöntemleri |
+| `--methods` | `list[str]` | `jenness_window_8tri, sector_adaptive_jenness_integral, tin_2tri_cell, gradient_multiplier` | Çalıştırılacak hesaplama yöntemleri |
 | `--resampling` | `str` | `bilinear` | Yeniden örnekleme algoritması |
 | `--nodata` | `float` | Otomatik | Nodata değeri (dataset'te tanımlı değilse) |
 | `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
@@ -564,11 +564,13 @@ Kullanılabilir yöntemler:
 --methods gradient_multiplier tin_2tri_cell jenness_window_8tri sector_adaptive_jenness_integral
 
 # Varsayılan yöntem seti (--methods belirtilmezse)
-# jenness_window_8tri, sector_adaptive_jenness_integral, tin_2tri_cell, gradient_multiplier, bilinear_patch_integral, adaptive_bilinear_patch_integral
+# jenness_window_8tri, sector_adaptive_jenness_integral, tin_2tri_cell, gradient_multiplier
 ```
 
 > Not: `multiscale_decomposed_area` artık varsayılan sette değildir.
 > Topo/mikro ayrıştırma gerektiğinde `--methods multiscale_decomposed_area` ile açıkça ekleyin.
+> `bilinear_patch_integral` ve `adaptive_bilinear_patch_integral` artık varsayılan sette değildir.
+> Bunları ek benchmark / appendix karşılaştırması için açıkça seçin.
 
 ---
 

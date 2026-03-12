@@ -48,8 +48,6 @@ DEFAULT_METHODS = [
     "sector_adaptive_jenness_integral",
     "tin_2tri_cell",
     "gradient_multiplier",
-    "bilinear_patch_integral",
-    "adaptive_bilinear_patch_integral",
 ]
 
 

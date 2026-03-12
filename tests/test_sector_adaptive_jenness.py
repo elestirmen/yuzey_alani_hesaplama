@@ -392,13 +392,13 @@ def test_sector_adaptive_jenness_keeps_existing_registry_and_methods_compatible(
     assert all(results[m].valid_cells > 0 for m in methods)
 
 
-def test_default_methods_enable_all_six_base_methods() -> None:
+def test_default_methods_focus_on_four_core_methods() -> None:
     assert DEFAULT_METHODS == [
         "jenness_window_8tri",
         "sector_adaptive_jenness_integral",
         "tin_2tri_cell",
         "gradient_multiplier",
-        "bilinear_patch_integral",
-        "adaptive_bilinear_patch_integral",
     ]
+    assert "bilinear_patch_integral" not in DEFAULT_METHODS
+    assert "adaptive_bilinear_patch_integral" not in DEFAULT_METHODS
     assert "multiscale_decomposed_area" not in DEFAULT_METHODS
