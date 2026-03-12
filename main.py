@@ -158,10 +158,14 @@ config: dict[str, object] = {
     # nearest : orijinal piksel degerlerini en sert haliyle korur
     # cubic   : daha yumusak sonuc verir, bazen biraz daha pahali olabilir
     "resampling": "bilinear",
-    # Egim hesabinda kullanilacak cekirdek.
-    # Sadece gradient temelli metodlari etkiler:
+    # Bir hucrenin egimini hesaplarken hangi komsu piksellerin kullanilacagini belirler.
+    # Yani "egim" degeri hangi stencil / kernel ile turetilsin sorusunun cevabidir.
+    # horn -> 3x3 pencerede 8 komsuyu agirlikli kullanir; genelde daha dengeli varsayilandir.
+    # zt   -> sadece N, S, E, W komsularina bakar; daha sade ve bazen daha hizlidir.
+    # Bu ayar sadece gradientten egim ureten metodlari etkiler:
     # - gradient_multiplier
     # - multiscale_decomposed_area
+    # Ornegin tin_2tri_cell veya jenness_window_8tri sonucunu degistirmez.
     "slope_method": "horn",
     # Rasterin icindeki nodata degeri yanlissa burada elle verebilirsin.
     # None birakirsan dosyanin kendi nodata bilgisi kullanilir.
@@ -275,7 +279,8 @@ class RunConfig:
         default="horn",
         metadata={
             "help": (
-                "Egim hesabinda kullanilan yontem: horn veya zt. "
+                "Bir hucrenin egimini hesaplarken hangi komsu piksellerin kullanilacagini belirler: "
+                "horn 3x3 / 8 komsulu agirlikli kernel, zt ise N-S-E-W yonlerinde daha sade fark kernelidir. "
                 "Bu ayar sadece gradient_multiplier ve multiscale_decomposed_area gibi gradient tabanli metodlari etkiler."
             )
         },
