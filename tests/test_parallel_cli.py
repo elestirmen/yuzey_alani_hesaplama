@@ -64,6 +64,29 @@ def test_runconfig_to_argv_includes_workers(tmp_path: Path) -> None:
     assert argv[argv.index("--workers") + 1] == "3"
 
 
+def test_runconfig_to_argv_supports_native_gsd(tmp_path: Path) -> None:
+    dem_path = tmp_path / "dem_native.tif"
+    _write_dem_geotiff(
+        dem_path,
+        np.zeros((8, 8), dtype=np.float64),
+        dx=1.0,
+        dy=1.0,
+        crs=CRS.from_epsg(3857),
+    )
+
+    cfg = RunConfig(
+        dem=str(dem_path),
+        outdir=str(tmp_path / "out_native"),
+        gsd=["native", 2.0],
+        methods=["gradient_multiplier"],
+        plots=False,
+    )
+    argv = cfg.to_argv()
+
+    assert "--gsd" in argv
+    assert argv[argv.index("--gsd") + 1 : argv.index("--methods")] == ["native", "2"]
+
+
 def test_cli_parallel_workers_matches_serial(tmp_path: Path) -> None:
     from surface_area.cli import main as cli_main
 
@@ -107,6 +130,41 @@ def test_cli_parallel_workers_matches_serial(tmp_path: Path) -> None:
 
     info_parallel = json.loads((out_parallel / "run_info.json").read_text(encoding="utf-8"))
     assert info_parallel["params"]["workers"] == 2
+
+
+def test_cli_native_gsd_uses_source_grid_without_resampling(tmp_path: Path) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_native_grid.tif"
+    outdir = tmp_path / "out_native_grid"
+    z = _demo_dem(30, 24, dx=2.0, dy=3.0)
+    _write_dem_geotiff(dem_path, z, dx=2.0, dy=3.0, crs=CRS.from_epsg(3857))
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "native",
+            "--methods",
+            "gradient_multiplier",
+        ]
+    )
+
+    assert rc == 0
+
+    df = pd.read_csv(outdir / "results_long.csv")
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert np.isclose(float(row["dx"]), 2.0, rtol=0.0, atol=1e-12)
+    assert np.isclose(float(row["dy"]), 3.0, rtol=0.0, atol=1e-12)
+    assert "resampling=native" in str(row["note"])
+
+    info_payload = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
+    assert info_payload["params"]["gsd_specs"] == ["native"]
 
 
 def test_compute_methods_on_raster_workers_matches_serial(tmp_path: Path) -> None:

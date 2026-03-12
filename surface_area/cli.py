@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,8 @@ from surface_area.progress import ProgressPrinter
 from surface_area.synthetic import SYNTHETIC_PRESETS, generate_synthetic_dsm
 
 
-DEFAULT_GSD_LIST = [0.1, 0.5, 1, 2, 5, 10, 20, 50]
+GSD_NATIVE_TOKEN = "native"
+DEFAULT_GSD_LIST = [GSD_NATIVE_TOKEN, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
 
 METHOD_CHOICES = [
     "jenness_window_8tri",
@@ -52,12 +54,93 @@ DEFAULT_METHODS = [
 
 
 @dataclass(frozen=True, slots=True)
+class _ResolvedGsdTarget:
+    gsd_m: float
+    use_native_grid: bool
+    label: str
+
+
+def _format_gsd_value(value: str | float) -> str:
+    if isinstance(value, str):
+        return value
+    return f"{float(value):g}"
+
+
+def _grid_resolution_key(dx: float, dy: float) -> tuple[str, str]:
+    return (f"{float(dx):.12g}", f"{float(dy):.12g}")
+
+
+def _native_gsd_scalar(info: RasterInfo) -> float:
+    dx = float(info.dx)
+    dy = float(info.dy)
+    if dx <= 0 or dy <= 0:
+        raise ValueError(f"Invalid pixel sizes from raster: dx={dx}, dy={dy}")
+    if math.isclose(dx, dy, rel_tol=1e-9, abs_tol=1e-12):
+        return dx
+    return 0.5 * (dx + dy)
+
+
+def _resolve_gsd_targets(
+    values: list[str] | list[str | float] | None,
+    *,
+    raster_info: RasterInfo,
+) -> list[_ResolvedGsdTarget]:
+    raw_values = list(values) if values is not None else list(DEFAULT_GSD_LIST)
+    if not raw_values:
+        raise ValueError("--gsd must contain at least one value")
+
+    resolved: list[_ResolvedGsdTarget] = []
+    seen: set[tuple[str, str]] = set()
+
+    for value in raw_values:
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if not token:
+                raise ValueError("--gsd must not contain empty strings")
+            if token == GSD_NATIVE_TOKEN:
+                key = _grid_resolution_key(raster_info.dx, raster_info.dy)
+                target = _ResolvedGsdTarget(
+                    gsd_m=_native_gsd_scalar(raster_info),
+                    use_native_grid=True,
+                    label=GSD_NATIVE_TOKEN,
+                )
+            else:
+                try:
+                    gsd_m = float(token)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"--gsd values must be positive numbers or '{GSD_NATIVE_TOKEN}', got: {value!r}"
+                    ) from exc
+                if gsd_m <= 0:
+                    raise ValueError(f"--gsd must contain positive values, got: {raw_values}")
+                key = _grid_resolution_key(gsd_m, gsd_m)
+                target = _ResolvedGsdTarget(gsd_m=gsd_m, use_native_grid=False, label=f"{gsd_m:g}")
+        else:
+            gsd_m = float(value)
+            if gsd_m <= 0:
+                raise ValueError(f"--gsd must contain positive values, got: {raw_values}")
+            key = _grid_resolution_key(gsd_m, gsd_m)
+            target = _ResolvedGsdTarget(gsd_m=gsd_m, use_native_grid=False, label=f"{gsd_m:g}")
+
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(target)
+
+    if not resolved:
+        raise ValueError("--gsd must contain at least one unique target resolution")
+    return resolved
+
+
+@dataclass(frozen=True, slots=True)
 class _RunJob:
     dem: str
     tmp_dir: str
     resampled_dir: str
     keep_resampled: bool
     gsd_m: float
+    gsd_label: str
+    use_native_grid: bool
     gsd_idx: int
     total_gsd: int
     resampling: str
@@ -101,22 +184,35 @@ class _RunJobResult:
 def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: Any | None = None) -> _RunJobResult:
     progress = ProgressPrinter() if show_progress else None
 
-    tag = safe_gsd_tag(job.gsd_m)
-    dst_dir = Path(job.resampled_dir if job.keep_resampled else job.tmp_dir)
-    dst_path = dst_dir / f"dem_gsd_{tag}m.tif"
-    rs = parse_resampling(job.resampling)
+    gsd_display = job.gsd_label
+    if job.use_native_grid:
+        dst_path = Path(job.dem)
+        res_info = get_raster_info(job.dem)
+        t_resample = 0.0
+        resampling_note = "native"
+        if progress is not None:
+            progress.log(
+                f"[{job.gsd_idx}/{job.total_gsd}] Using native DEM grid "
+                f"(dx={res_info.dx:g}, dy={res_info.dy:g}) ..."
+            )
+    else:
+        tag = safe_gsd_tag(job.gsd_m)
+        dst_dir = Path(job.resampled_dir if job.keep_resampled else job.tmp_dir)
+        dst_path = dst_dir / f"dem_gsd_{tag}m.tif"
+        rs = parse_resampling(job.resampling)
 
-    if progress is not None:
-        progress.log(f"[{job.gsd_idx}/{job.total_gsd}] Resampling DEM at gsd={job.gsd_m:g} ...")
-    t0 = perf_counter()
-    res_info = resample_dem(
-        src_path=job.dem,
-        dst_path=dst_path,
-        target_gsd_m=job.gsd_m,
-        resampling=rs,
-        nodata=job.nodata,
-    )
-    t_resample = perf_counter() - t0
+        if progress is not None:
+            progress.log(f"[{job.gsd_idx}/{job.total_gsd}] Resampling DEM at gsd={job.gsd_m:g} ...")
+        t0 = perf_counter()
+        res_info = resample_dem(
+            src_path=job.dem,
+            dst_path=dst_path,
+            target_gsd_m=job.gsd_m,
+            resampling=rs,
+            nodata=job.nodata,
+        )
+        t_resample = perf_counter() - t0
+        resampling_note = rs.name
 
     dx = res_info.dx
     dy = res_info.dy
@@ -132,7 +228,7 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
         def _methods_progress(_: str, current: int, total: int) -> None:
             if progress is not None:
                 progress.update(
-                    label=f"[{job.gsd_idx}/{job.total_gsd}] compute (gsd={job.gsd_m:g})",
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] compute (gsd={gsd_display})",
                     current=current,
                     total=total,
                 )
@@ -165,7 +261,7 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
             a2d = float(r.valid_cells) * dx * dy
             a3d = float(r.a3d)
             ratio = float(a3d / a2d) if a2d > 0 else float("nan")
-            note_parts = [f"resampling={rs.name}", f"dx={dx:g}", f"dy={dy:g}"]
+            note_parts = [f"resampling={resampling_note}", f"dx={dx:g}", f"dy={dy:g}"]
             if method == "jenness_window_8tri":
                 note_parts.append(f"weight={job.jenness_weight:g}")
                 note_parts.append("triangle=heron")
@@ -240,7 +336,7 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
         def _roi_progress(_: str, current: int, total: int) -> None:
             if progress is not None:
                 progress.update(
-                    label=f"[{job.gsd_idx}/{job.total_gsd}] roi (gsd={job.gsd_m:g})",
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] roi (gsd={gsd_display})",
                     current=current,
                     total=total,
                 )
@@ -284,7 +380,7 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
         def _ms_progress(stage: str, current: int, total: int) -> None:
             if progress is not None:
                 progress.update(
-                    label=f"[{job.gsd_idx}/{job.total_gsd}] {stage} (gsd={job.gsd_m:g})",
+                    label=f"[{job.gsd_idx}/{job.total_gsd}] {stage} (gsd={gsd_display})",
                     current=current,
                     total=total,
                 )
@@ -336,7 +432,7 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
                 }
             )
 
-    if not job.keep_resampled:
+    if not job.keep_resampled and not job.use_native_grid:
         try:
             dst_path.unlink(missing_ok=True)
         except Exception:
@@ -435,10 +531,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--outdir", required=True, type=Path, help="Output directory")
     run.add_argument(
         "--gsd",
-        type=float,
+        type=str,
         nargs="+",
         default=None,
-        help=f"Target GSD list in meters (default: {DEFAULT_GSD_LIST})",
+        help=(
+            f"Target GSD list in meters or '{GSD_NATIVE_TOKEN}' for the source grid "
+            f"(default: {' '.join(_format_gsd_value(v) for v in DEFAULT_GSD_LIST)})"
+        ),
     )
     run.add_argument(
         "--methods",
@@ -532,11 +631,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    gsd_list = [float(x) for x in (args.gsd if args.gsd is not None else DEFAULT_GSD_LIST)]
-    if not gsd_list or any(x <= 0 for x in gsd_list):
-        print(f"ERROR: --gsd must contain positive values, got: {gsd_list}", file=sys.stderr)
+    try:
+        gsd_targets = _resolve_gsd_targets(args.gsd, raster_info=info)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    gsd_list = sorted(set(gsd_list))
+    gsd_list = [float(target.gsd_m) for target in gsd_targets]
     worker_count = int(args.workers)
     if worker_count <= 0:
         print(f"ERROR: --workers must be >= 1, got: {worker_count}", file=sys.stderr)
@@ -558,6 +658,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "dem_info": _raster_info_json(info),
         "versions": versions,
         "params": {
+            "gsd_specs": [target.label for target in gsd_targets],
             "gsd_list": gsd_list,
             "methods": method_list,
             "resampling": rs.name,
@@ -622,7 +723,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             tmp_dir=str(tmp_dir),
             resampled_dir=str(resampled_dir),
             keep_resampled=bool(args.keep_resampled),
-            gsd_m=gsd_m,
+            gsd_m=target.gsd_m,
+            gsd_label=target.label,
+            use_native_grid=target.use_native_grid,
             gsd_idx=gsd_idx,
             total_gsd=total_gsd,
             resampling=rs.name,
@@ -653,7 +756,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             raster_crs=None if info.crs is None else info.crs.to_string(),
             workers=worker_count,
         )
-        for gsd_idx, gsd_m in enumerate(gsd_list, start=1)
+        for gsd_idx, target in enumerate(gsd_targets, start=1)
     ]
 
     if worker_count > 1:

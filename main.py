@@ -64,6 +64,28 @@ def _resolve_methods(method_choice: str, methods: list[str] | None) -> list[str]
     return list(METHOD_PRESETS[preset_key])
 
 
+def _normalize_gsd_values(gsd_values: list[float | str]) -> list[float | str]:
+    normalized: list[float | str] = []
+    for value in gsd_values:
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token != surface_area_cli.GSD_NATIVE_TOKEN:
+                raise ValueError(
+                    f"gsd string values must be '{surface_area_cli.GSD_NATIVE_TOKEN}', got: {value!r}"
+                )
+            normalized.append(token)
+            continue
+        if not isinstance(value, (int, float)):
+            raise ValueError(
+                f"gsd values must be numbers or '{surface_area_cli.GSD_NATIVE_TOKEN}', got: {gsd_values!r}"
+            )
+        numeric = float(value)
+        if numeric <= 0:
+            raise ValueError(f"gsd numeric values must be > 0, got: {gsd_values!r}")
+        normalized.append(numeric)
+    return normalized
+
+
 config: dict[str, object] = {
     # ============================================================
     # 1) TEMEL DOSYALAR
@@ -80,10 +102,11 @@ config: dict[str, object] = {
     # 2) HANGI COZUMLERDE CALISACAK?
     # ============================================================
     # GSD = piksel boyutu / hedef cozum.
-    # Listedeki her deger icin raster yeniden orneklenir ve secili tum metodlar tekrar calisir.
+    # "native" yazarsan goruntunun kendi piksel boyutunda calisir; yeniden ornekleme yapmaz.
+    # Listedeki sayisal her deger icin raster yeniden orneklenir ve secili tum metodlar tekrar calisir.
     # Yani liste ne kadar uzunsa toplam sure de o kadar uzar.
     # Kisa bir test icin [1, 2, 5] gibi kucuk bir liste daha pratiktir.
-    "gsd": [0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+    "gsd": ["native", 0.1, 0.5, 1, 2, 5, 10, 20, 50],
     # ============================================================
     # 3) HANGI METOTLAR CALISACAK?
     # ============================================================
@@ -204,12 +227,13 @@ class RunConfig:
         default="out_vadi",
         metadata={"help": "Sonuclarin yazilacagi klasor. Yoksa otomatik olusturulur."},
     )
-    gsd: list[float] = field(
-        default_factory=lambda: [0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+    gsd: list[float | str] = field(
+        default_factory=lambda: ["native", 0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
         metadata={
             "help": (
-                "Hedef GSD listesi. Listedeki her deger icin raster yeniden orneklenir ve secili tum metotlar tekrar calisir. "
-                "Bu yuzden liste uzadikca toplam sure artar. Hizli deneme icin [1, 2, 5] gibi kisa bir liste iyidir."
+                "Hedef GSD listesi. 'native' yazarsan rasteri kendi cozumunde kullanir; "
+                "sayisal degerlerde ise her hedef GSD icin yeniden ornekleme yapip secili tum metotlari tekrar calistirir. "
+                "Bu yuzden liste uzadikca toplam sure artar. Hizli deneme icin ['native', 1, 2, 5] gibi kisa bir liste iyidir."
             )
         },
     )
@@ -370,10 +394,7 @@ class RunConfig:
 
         if not self.gsd:
             raise ValueError("gsd list must not be empty")
-        if any((not isinstance(v, (int, float))) for v in self.gsd):
-            raise ValueError(f"gsd values must be numbers, got: {self.gsd!r}")
-        if any(float(v) <= 0 for v in self.gsd):
-            raise ValueError(f"gsd values must be > 0, got: {self.gsd!r}")
+        _ = _normalize_gsd_values(self.gsd)
 
         _ = self.resolved_methods()
 
@@ -408,6 +429,7 @@ class RunConfig:
     def to_argv(self) -> list[str]:
         self.validate()
         resolved_methods = self.resolved_methods()
+        normalized_gsd = _normalize_gsd_values(self.gsd)
 
         argv: list[str] = [
             "run",
@@ -416,7 +438,10 @@ class RunConfig:
             "--outdir",
             self.outdir,
             "--gsd",
-            *[f"{float(v):g}" for v in self.gsd],
+            *[
+                surface_area_cli.GSD_NATIVE_TOKEN if isinstance(v, str) else f"{float(v):g}"
+                for v in normalized_gsd
+            ],
             "--resampling",
             self.resampling,
             "--slope_method",
