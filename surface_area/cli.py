@@ -50,6 +50,47 @@ DEFAULT_METHODS = [
     "gradient_multiplier",
 ]
 
+_RESULTS_LONG_BASE_COLUMNS = [
+    "gsd_m",
+    "dx",
+    "dy",
+    "method",
+    "A2D",
+    "A3D",
+    "ratio",
+    "valid_cells",
+    "runtime_sec",
+    "resample_runtime_sec",
+    "note",
+]
+_RESULTS_ROI_BASE_COLUMNS = [
+    "gsd_m",
+    "dx",
+    "dy",
+    "roi_id",
+    "method",
+    "A2D",
+    "A3D",
+    "ratio",
+    "valid_cells",
+    "runtime_sec",
+    "resample_runtime_sec",
+    "note",
+]
+_RESULTS_REFERENCE_COLUMNS = ["A3D_ref", "A3D_diff", "A3D_rel_err"]
+_RESULTS_MULTISCALE_COLUMNS = ["a_topo", "a_micro", "a_total", "micro_ratio", "sigma_m"]
+_RESULTS_ADAPTIVE_COLUMNS = [
+    "adaptive_avg_level",
+    "adaptive_max_level_used",
+    "adaptive_refined_cell_fraction",
+    "adaptive_total_subcells_evaluated",
+]
+_RESULTS_SECTOR_COLUMNS = [
+    "sector_jenness_avg_level",
+    "sector_jenness_max_level_used",
+    "sector_jenness_refined_fraction",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class _ResolvedGsdTarget:
@@ -528,6 +569,21 @@ def _write_results_workbook(
     return workbook_path
 
 
+def _order_result_columns(df: pd.DataFrame, *, base_columns: list[str]) -> pd.DataFrame:
+    ordered: list[str] = []
+    for column in (
+        base_columns
+        + _RESULTS_REFERENCE_COLUMNS
+        + _RESULTS_MULTISCALE_COLUMNS
+        + _RESULTS_ADAPTIVE_COLUMNS
+        + _RESULTS_SECTOR_COLUMNS
+    ):
+        if column in df.columns and column not in ordered:
+            ordered.append(column)
+    remaining = [column for column in df.columns if column not in ordered]
+    return df[ordered + remaining]
+
+
 def _sigma_list_for_gsd(gsd_m: float, *, sigma_values: list[float], sigma_mode: str) -> list[float]:
     mode = sigma_mode.strip().lower()
     if mode not in {"mult", "m"}:
@@ -793,18 +849,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.roi_only:
         df_long = pd.DataFrame.from_records(rows).sort_values(["gsd_m", "method"]).reset_index(drop=True)
 
-        adaptive_cols = [
-            "adaptive_avg_level",
-            "adaptive_max_level_used",
-            "adaptive_refined_cell_fraction",
-            "adaptive_total_subcells_evaluated",
-        ]
-        sector_cols = [
-            "sector_jenness_avg_level",
-            "sector_jenness_max_level_used",
-            "sector_jenness_refined_fraction",
-        ]
-
         if args.reference_csv is not None:
             try:
                 ref = pd.read_csv(args.reference_csv)
@@ -823,10 +867,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             except Exception as e:
                 print(f"WARNING: failed to read/merge reference CSV: {e}", file=sys.stderr)
 
-        # Ensure any newly-added adaptive diagnostics stay at the end of the exported results table.
-        keep = [c for c in df_long.columns if c not in adaptive_cols + sector_cols]
-        tail = [c for c in adaptive_cols if c in df_long.columns] + [c for c in sector_cols if c in df_long.columns]
-        df_long = df_long[keep + tail]
+        df_long = _order_result_columns(df_long, base_columns=_RESULTS_LONG_BASE_COLUMNS)
 
         if args.plots:
             progress.log("Plotting...")
@@ -841,20 +882,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         df_roi = pd.DataFrame.from_records(roi_rows).sort_values(["gsd_m", "roi_id", "method"]).reset_index(
             drop=True
         )
-        adaptive_cols = [
-            "adaptive_avg_level",
-            "adaptive_max_level_used",
-            "adaptive_refined_cell_fraction",
-            "adaptive_total_subcells_evaluated",
-        ]
-        sector_cols = [
-            "sector_jenness_avg_level",
-            "sector_jenness_max_level_used",
-            "sector_jenness_refined_fraction",
-        ]
-        keep = [c for c in df_roi.columns if c not in adaptive_cols + sector_cols]
-        tail = [c for c in adaptive_cols if c in df_roi.columns] + [c for c in sector_cols if c in df_roi.columns]
-        df_roi = df_roi[keep + tail]
+        df_roi = _order_result_columns(df_roi, base_columns=_RESULTS_ROI_BASE_COLUMNS)
 
     workbook_path = _write_results_workbook(outdir, run_info=run_info, df_long=df_long, df_roi=df_roi)
     print(f"Wrote: {workbook_path}")

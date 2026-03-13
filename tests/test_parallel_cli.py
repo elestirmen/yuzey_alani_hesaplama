@@ -44,6 +44,23 @@ def _read_results_sheet(workbook_path: Path, sheet_name: str) -> pd.DataFrame:
     return pd.read_excel(workbook_path, sheet_name=sheet_name)
 
 
+def _write_roi_geojson(path: Path) -> None:
+    payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"id": "roi_a"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[2.0, 2.0], [12.0, 2.0], [12.0, 12.0], [2.0, 12.0], [2.0, 2.0]]],
+                },
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_runconfig_to_argv_includes_workers(tmp_path: Path) -> None:
     dem_path = tmp_path / "dem.tif"
     _write_dem_geotiff(
@@ -232,6 +249,108 @@ def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -
         rtol=0.0,
         atol=1e-9,
     )
+
+
+def test_cli_multiscale_only_results_long_column_order_is_stable(tmp_path: Path) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_multiscale.tif"
+    outdir = tmp_path / "out_multiscale"
+    z = _demo_dem(24, 24, dx=1.0, dy=1.0)
+    _write_dem_geotiff(dem_path, z, dx=1.0, dy=1.0, crs=CRS.from_epsg(3857))
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "1",
+            "--methods",
+            "multiscale_decomposed_area",
+        ]
+    )
+
+    assert rc == 0
+
+    df_long = _read_results_sheet(outdir / "results.xlsx", "results_long")
+    assert list(df_long.columns) == [
+        "gsd_m",
+        "dx",
+        "dy",
+        "method",
+        "A2D",
+        "A3D",
+        "ratio",
+        "valid_cells",
+        "runtime_sec",
+        "resample_runtime_sec",
+        "note",
+        "a_topo",
+        "a_micro",
+        "a_total",
+        "micro_ratio",
+        "sigma_m",
+    ]
+    assert "note" in df_long.columns
+    assert df_long.columns.get_loc("note") < df_long.columns.get_loc("a_topo")
+
+
+def test_cli_roi_results_sheet_column_order_is_consistent(tmp_path: Path) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_roi.tif"
+    roi_path = tmp_path / "roi.geojson"
+    outdir = tmp_path / "out_roi"
+    z = _demo_dem(30, 30, dx=1.0, dy=1.0)
+    _write_dem_geotiff(dem_path, z, dx=1.0, dy=1.0, crs=CRS.from_epsg(3857))
+    _write_roi_geojson(roi_path)
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "1",
+            "--methods",
+            "adaptive_bilinear_patch_integral",
+            "sector_adaptive_jenness_integral",
+            "--roi",
+            str(roi_path),
+            "--roi_id_field",
+            "id",
+        ]
+    )
+
+    assert rc == 0
+
+    df_roi = _read_results_sheet(outdir / "results.xlsx", "results_roi_long")
+    assert list(df_roi.columns) == [
+        "gsd_m",
+        "dx",
+        "dy",
+        "roi_id",
+        "method",
+        "A2D",
+        "A3D",
+        "ratio",
+        "valid_cells",
+        "runtime_sec",
+        "resample_runtime_sec",
+        "note",
+        "adaptive_avg_level",
+        "adaptive_max_level_used",
+        "adaptive_refined_cell_fraction",
+        "adaptive_total_subcells_evaluated",
+        "sector_jenness_avg_level",
+        "sector_jenness_max_level_used",
+        "sector_jenness_refined_fraction",
+    ]
 
 
 def test_compute_methods_on_raster_workers_matches_serial(tmp_path: Path) -> None:
