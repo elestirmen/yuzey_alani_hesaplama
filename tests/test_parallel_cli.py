@@ -9,6 +9,7 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
+import main
 from main import RunConfig
 
 
@@ -190,6 +191,74 @@ def test_cli_native_gsd_uses_source_grid_without_resampling(tmp_path: Path) -> N
 
     info_payload = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
     assert info_payload["params"]["gsd_specs"] == ["native"]
+
+
+def test_main_run_includes_synthetic_ground_truth_columns_when_reference_sidecar_exists(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import generate_synthetic_tif
+
+    dem_path = tmp_path / "analytic_dem.tif"
+    outdir = tmp_path / "out_with_gt"
+
+    rc_gen = generate_synthetic_tif.main(
+        [
+            "--out",
+            str(dem_path),
+            "--preset",
+            "analytic_gaussian_hill",
+            "--no-all-presets",
+            "--dx",
+            "1",
+            "--extent_width",
+            "24",
+            "--extent_height",
+            "18",
+            "--seed",
+            "5",
+            "--eval_gsd",
+            "2",
+            "--quiet",
+        ]
+    )
+    assert rc_gen == 0
+
+    monkeypatch.setattr(
+        main.sys,
+        "argv",
+        [
+            "main.py",
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "native",
+            "2",
+            "--methods",
+            "gradient_multiplier",
+        ],
+    )
+
+    rc = main.main()
+    assert rc == 0
+
+    df = _read_results_sheet(outdir / "results.xlsx", "results_long").sort_values("gsd_m").reset_index(drop=True)
+    assert "continuous_gt_A3D" in df.columns
+    assert "A3D_continuous_gt_rel_err" in df.columns
+    assert "synthetic_native_ref_A3D" in df.columns
+    assert "A3D_synthetic_native_ref_rel_err" in df.columns
+    assert df["synthetic_native_ref_A3D"].notna().all()
+
+    sidecar = json.loads(dem_path.with_suffix(".reference.json").read_text(encoding="utf-8"))
+    gt_a3d = float(sidecar["continuous_ground_truth"]["surface_area_m2"])
+    assert np.allclose(df["continuous_gt_A3D"].to_numpy(), gt_a3d, rtol=0.0, atol=1e-9)
+
+    run_info = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
+    assert run_info["synthetic_reference"]["has_continuous_ground_truth"] is True
+    assert run_info["synthetic_reference"]["terrain_family"] == "analytic"
 
 
 def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -> None:

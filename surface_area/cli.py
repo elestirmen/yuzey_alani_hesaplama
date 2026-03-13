@@ -78,6 +78,18 @@ _RESULTS_ROI_BASE_COLUMNS = [
     "note",
 ]
 _RESULTS_REFERENCE_COLUMNS = ["A3D_ref", "A3D_diff", "A3D_rel_err"]
+_RESULTS_SYNTHETIC_REFERENCE_COLUMNS = [
+    "synthetic_native_ref_A2D",
+    "synthetic_native_ref_A3D",
+    "synthetic_native_ref_ratio",
+    "A3D_synthetic_native_ref_diff",
+    "A3D_synthetic_native_ref_rel_err",
+    "continuous_gt_A2D",
+    "continuous_gt_A3D",
+    "continuous_gt_ratio",
+    "A3D_continuous_gt_diff",
+    "A3D_continuous_gt_rel_err",
+]
 _RESULTS_MULTISCALE_COLUMNS = ["a_topo", "a_micro", "a_total", "micro_ratio", "sigma_m"]
 _RESULTS_ADAPTIVE_COLUMNS = [
     "adaptive_avg_level",
@@ -107,6 +119,105 @@ def _format_gsd_value(value: str | float) -> str:
 
 def _grid_resolution_key(dx: float, dy: float) -> tuple[str, str]:
     return (f"{float(dx):.12g}", f"{float(dy):.12g}")
+
+
+def _load_synthetic_reference_payload(dem_path: Path) -> dict[str, Any] | None:
+    sidecar_path = dem_path.with_suffix(".reference.json")
+    if not sidecar_path.exists():
+        return None
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload["_sidecar_path"] = str(sidecar_path)
+    return payload
+
+
+def _synthetic_reference_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    continuous = payload.get("continuous_ground_truth")
+    native = payload.get("native_grid_reference")
+    multi_resolution = payload.get("multi_resolution")
+    return {
+        "sidecar_path": payload.get("_sidecar_path"),
+        "terrain_family": payload.get("terrain_family"),
+        "has_continuous_ground_truth": isinstance(continuous, dict),
+        "continuous_gt_surface_area_m2": None if not isinstance(continuous, dict) else continuous.get("surface_area_m2"),
+        "continuous_gt_planar_area_m2": None if not isinstance(continuous, dict) else continuous.get("planar_area_m2"),
+        "native_reference_surface_area_m2": None if not isinstance(native, dict) else native.get("surface_area_m2"),
+        "resolution_count": len(multi_resolution) if isinstance(multi_resolution, list) else 0,
+    }
+
+
+def _append_synthetic_reference_columns(df_long: pd.DataFrame, payload: dict[str, Any] | None) -> pd.DataFrame:
+    if payload is None or df_long.empty:
+        return df_long
+
+    continuous = payload.get("continuous_ground_truth")
+    if isinstance(continuous, dict):
+        gt_a2d = continuous.get("planar_area_m2")
+        gt_a3d = continuous.get("surface_area_m2")
+        gt_ratio = continuous.get("surface_ratio")
+        if gt_a2d is not None:
+            df_long["continuous_gt_A2D"] = float(gt_a2d)
+        if gt_a3d is not None:
+            gt_a3d_float = float(gt_a3d)
+            df_long["continuous_gt_A3D"] = gt_a3d_float
+            df_long["A3D_continuous_gt_diff"] = df_long["A3D"] - gt_a3d_float
+            if gt_a3d_float != 0:
+                df_long["A3D_continuous_gt_rel_err"] = df_long["A3D_continuous_gt_diff"] / gt_a3d_float
+        if gt_ratio is not None:
+            df_long["continuous_gt_ratio"] = float(gt_ratio)
+
+    native_lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    multi_resolution = payload.get("multi_resolution")
+    if isinstance(multi_resolution, list):
+        for entry in multi_resolution:
+            if not isinstance(entry, dict):
+                continue
+            grid_info = entry.get("grid_info")
+            native_ref = entry.get("native_grid_reference")
+            if not isinstance(grid_info, dict) or not isinstance(native_ref, dict):
+                continue
+            dx = grid_info.get("dx")
+            dy = grid_info.get("dy")
+            if dx is None or dy is None:
+                continue
+            native_lookup[_grid_resolution_key(float(dx), float(dy))] = native_ref
+
+    if not native_lookup:
+        grid_info = payload.get("grid_info")
+        native_ref = payload.get("native_grid_reference")
+        if isinstance(grid_info, dict) and isinstance(native_ref, dict):
+            dx = grid_info.get("dx")
+            dy = grid_info.get("dy")
+            if dx is not None and dy is not None:
+                native_lookup[_grid_resolution_key(float(dx), float(dy))] = native_ref
+
+    if native_lookup:
+        synthetic_native_a2d: list[float] = []
+        synthetic_native_a3d: list[float] = []
+        synthetic_native_ratio: list[float] = []
+        for row in df_long.itertuples(index=False):
+            native_ref = native_lookup.get(_grid_resolution_key(float(row.dx), float(row.dy)))
+            if native_ref is None:
+                synthetic_native_a2d.append(float("nan"))
+                synthetic_native_a3d.append(float("nan"))
+                synthetic_native_ratio.append(float("nan"))
+                continue
+            synthetic_native_a2d.append(float(native_ref.get("planar_area_m2", float("nan"))))
+            synthetic_native_a3d.append(float(native_ref.get("surface_area_m2", float("nan"))))
+            synthetic_native_ratio.append(float(native_ref.get("surface_ratio", float("nan"))))
+
+        df_long["synthetic_native_ref_A2D"] = synthetic_native_a2d
+        df_long["synthetic_native_ref_A3D"] = synthetic_native_a3d
+        df_long["synthetic_native_ref_ratio"] = synthetic_native_ratio
+        df_long["A3D_synthetic_native_ref_diff"] = df_long["A3D"] - df_long["synthetic_native_ref_A3D"]
+        valid_den = df_long["synthetic_native_ref_A3D"].replace({0.0: float("nan")})
+        df_long["A3D_synthetic_native_ref_rel_err"] = df_long["A3D_synthetic_native_ref_diff"] / valid_den
+
+    return df_long
 
 
 def _native_gsd_scalar(info: RasterInfo) -> float:
@@ -574,6 +685,7 @@ def _order_result_columns(df: pd.DataFrame, *, base_columns: list[str]) -> pd.Da
     for column in (
         base_columns
         + _RESULTS_REFERENCE_COLUMNS
+        + _RESULTS_SYNTHETIC_REFERENCE_COLUMNS
         + _RESULTS_MULTISCALE_COLUMNS
         + _RESULTS_ADAPTIVE_COLUMNS
         + _RESULTS_SECTOR_COLUMNS
@@ -696,6 +808,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     info = get_raster_info(dem)
     unit_name = crs_linear_unit_name(info.crs)
     unit_is_meter = crs_is_meter(info.crs)
+    synthetic_reference_payload = _load_synthetic_reference_payload(dem)
     if unit_is_meter is False:
         print(
             f"WARNING: DEM CRS unit does not look like meters (unit={unit_name!r}). "
@@ -734,6 +847,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         "timestamp_utc": run_ts,
         "dem": str(dem),
         "dem_info": _raster_info_json(info),
+        "synthetic_reference": None
+        if synthetic_reference_payload is None
+        else _synthetic_reference_summary(synthetic_reference_payload),
         "versions": versions,
         "params": {
             "gsd_specs": [target.label for target in gsd_targets],
@@ -866,6 +982,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     print("WARNING: reference CSV did not match expected columns; skipping merge.", file=sys.stderr)
             except Exception as e:
                 print(f"WARNING: failed to read/merge reference CSV: {e}", file=sys.stderr)
+
+        df_long = _append_synthetic_reference_columns(df_long, synthetic_reference_payload)
 
         df_long = _order_result_columns(df_long, base_columns=_RESULTS_LONG_BASE_COLUMNS)
 
