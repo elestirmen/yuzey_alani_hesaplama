@@ -484,6 +484,50 @@ def _write_run_info(outdir: Path, payload: dict) -> Path:
     return path
 
 
+def _run_info_sheet(payload: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+
+    def _visit(prefix: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                _visit(child_prefix, child)
+            return
+        if isinstance(value, list):
+            if any(isinstance(item, (dict, list)) for item in value):
+                for index, child in enumerate(value):
+                    child_prefix = f"{prefix}[{index}]"
+                    _visit(child_prefix, child)
+            else:
+                rows.append({"key": prefix, "value": json.dumps(value, ensure_ascii=False)})
+            return
+        rows.append({"key": prefix, "value": value})
+
+    _visit("", payload)
+    return pd.DataFrame.from_records(rows, columns=["key", "value"])
+
+
+def _write_results_workbook(
+    outdir: Path,
+    *,
+    run_info: dict[str, Any],
+    df_long: pd.DataFrame | None = None,
+    df_roi: pd.DataFrame | None = None,
+) -> Path:
+    outdir.mkdir(parents=True, exist_ok=True)
+    workbook_path = outdir / "results.xlsx"
+
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        if df_long is not None:
+            df_long.to_excel(writer, sheet_name="results_long", index=False)
+            _results_wide(df_long).to_excel(writer, sheet_name="results_wide", index=False)
+        if df_roi is not None and not df_roi.empty:
+            df_roi.to_excel(writer, sheet_name="results_roi_long", index=False)
+        _run_info_sheet(run_info).to_excel(writer, sheet_name="run_info", index=False)
+
+    return workbook_path
+
+
 def _sigma_list_for_gsd(gsd_m: float, *, sigma_values: list[float], sigma_mode: str) -> list[float]:
     mode = sigma_mode.strip().lower()
     if mode not in {"mult", "m"}:
@@ -494,29 +538,9 @@ def _sigma_list_for_gsd(gsd_m: float, *, sigma_values: list[float], sigma_mode: 
 
 
 def _results_wide(df_long: pd.DataFrame) -> pd.DataFrame:
-    metrics = [
-        "A2D",
-        "A3D",
-        "ratio",
-        "valid_cells",
-        "runtime_sec",
-        "a_topo",
-        "a_micro",
-        "a_total",
-        "micro_ratio",
-        "adaptive_avg_level",
-        "adaptive_max_level_used",
-        "adaptive_refined_cell_fraction",
-        "adaptive_total_subcells_evaluated",
-        "sector_jenness_avg_level",
-        "sector_jenness_max_level_used",
-        "sector_jenness_refined_fraction",
-    ]
-    keep_metrics = [m for m in metrics if m in df_long.columns]
-
-    wide = df_long.set_index(["gsd_m", "method"])[keep_metrics].unstack("method")
-    # wide columns are MultiIndex (metric, method)
-    wide.columns = [f"{method}_{metric}" for metric, method in wide.columns.to_list()]
+    # Excel-friendly wide output: one column per computed method, only the final area value.
+    wide = df_long.set_index(["gsd_m", "method"])["A3D"].unstack("method")
+    wide.columns = [f"{method}_A3D" for method in wide.columns.to_list()]
     return wide.reset_index().sort_values("gsd_m")
 
 
@@ -690,6 +714,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     rows: list[dict] = []
     roi_rows: list[dict] = []
+    df_long: pd.DataFrame | None = None
+    df_roi: pd.DataFrame | None = None
     resampled_dir = outdir / "resampled"
     tmp_dir = outdir / "_tmp" / f"run_{run_tag}"
     if args.keep_resampled:
@@ -797,16 +823,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             except Exception as e:
                 print(f"WARNING: failed to read/merge reference CSV: {e}", file=sys.stderr)
 
-        # Ensure any newly-added adaptive diagnostics are appended at the end of the CSV.
+        # Ensure any newly-added adaptive diagnostics stay at the end of the exported results table.
         keep = [c for c in df_long.columns if c not in adaptive_cols + sector_cols]
         tail = [c for c in adaptive_cols if c in df_long.columns] + [c for c in sector_cols if c in df_long.columns]
         df_long = df_long[keep + tail]
-
-        long_path = outdir / "results_long.csv"
-        df_long.to_csv(long_path, index=False)
-
-        wide_path = outdir / "results_wide.csv"
-        _results_wide(df_long).to_csv(wide_path, index=False)
 
         if args.plots:
             progress.log("Plotting...")
@@ -814,8 +834,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             plot_ratio_vs_gsd(df_long, outdir)
             plot_micro_ratio_vs_gsd(df_long, outdir)
 
-        print(f"Wrote: {long_path}")
-        print(f"Wrote: {wide_path}")
         if args.plots:
             print(f"Wrote plots to: {outdir}")
 
@@ -837,9 +855,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         keep = [c for c in df_roi.columns if c not in adaptive_cols + sector_cols]
         tail = [c for c in adaptive_cols if c in df_roi.columns] + [c for c in sector_cols if c in df_roi.columns]
         df_roi = df_roi[keep + tail]
-        roi_path = outdir / "results_roi_long.csv"
-        df_roi.to_csv(roi_path, index=False)
-        print(f"Wrote: {roi_path}")
+
+    workbook_path = _write_results_workbook(outdir, run_info=run_info, df_long=df_long, df_roi=df_roi)
+    print(f"Wrote: {workbook_path}")
 
     return 0
 

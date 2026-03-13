@@ -94,7 +94,7 @@ python main.py
 <td width="50%">
 
 ### 📈 Çıktılar
-- **CSV** formatında sonuçlar (long + wide format)
+- **Excel (`.xlsx`)** formatında sonuçlar (sheet'ler halinde)
 - **JSON** metadata ve run bilgisi
 - **PNG** grafikler (A3D vs GSD, ratio vb.)
 - **Ground truth** referans değerler
@@ -153,10 +153,10 @@ flowchart TB
     end
 
     subgraph OUTPUT["📤 Çıktı"]
-        CSV["📊 CSV<br/>results_long.csv<br/>results_wide.csv"]
+        XLSX["📊 Excel<br/>results.xlsx<br/>results_long / results_wide"]
         JSON["📋 JSON<br/>run_info.json"]
         PLOTS["📈 PNG<br/>A3D vs GSD grafikleri"]
-        ROI_OUT["📍 ROI Sonuçları<br/>results_roi_long.csv"]
+        ROI_OUT["📍 ROI Sonuçları<br/>results.xlsx / results_roi_long"]
     end
 
     DEM --> RESAMPLE
@@ -165,7 +165,7 @@ flowchart TB
     METHODS --> METHODS_DETAIL
     ROI -.-> METHODS
     
-    METHODS_DETAIL --> CSV
+    METHODS_DETAIL --> XLSX
     METHODS_DETAIL --> JSON
     METHODS_DETAIL --> PLOTS
     ROI --> ROI_OUT
@@ -442,7 +442,7 @@ python generate_synthetic_tif.py \
 # Referans: out_synth/synth_mountain_dx1_seed42.reference.json
 # İçerik: surface_area_m2, planar_area_m2, surface_ratio, valid_cells, nodata_cells
 
-# Kıyas: gsd=1 ile çalıştırıp results_long.csv içindeki A3D'yi JSON'daki surface_area_m2 ile karşılaştırın.
+# Kıyas: gsd=1 ile çalıştırıp results.xlsx içindeki results_long sayfasındaki A3D'yi JSON'daki surface_area_m2 ile karşılaştırın.
 python -m surface_area run \
   --dem out_synth/synth_mountain_dx1_seed42.tif \
   --outdir out_synth_run \
@@ -912,7 +912,7 @@ level-3: toplam 64 alt üçgen
 - `level-0`, hiç bölmeden yapılan ilk kaba değerlendirmedir.
 - `level-1`, ilk adaptif bölme seviyesidir; pratikte birçok hücre burada yeterince iyi yakınsar.
 - `--sector_jenness_max_level`, bu subdivision derinliği için üst sınırı belirler.
-- CSV'deki `sector_jenness_avg_level` ve `sector_jenness_max_level_used` bu hiyerarşiyi raporlar.
+- `results_long` sayfasındaki `sector_jenness_avg_level` ve `sector_jenness_max_level_used` bu hiyerarşiyi raporlar.
 
 Klasik Jenness'ten farkı:
 - Komşu hücre merkezlerinden kurulan 3B triangle fan kullanmaz.
@@ -1031,7 +1031,7 @@ z(u,v) = (1-u)(1-v)×z00 + u(1-v)×z10 + (1-u)v×z01 + uv×z11
 - Düz alanlar: düşük seviye, hızlı.
 - Engebeli alanlar: daha fazla inceltme, daha yüksek doğruluk.
 
-**Ek çıktı kolonları (results_long.csv sonunda):**
+**Ek çıktı kolonları (results_long sayfasında):**
 - `adaptive_avg_level`: Ortalama adaptif seviye
 - `adaptive_max_level_used`: Kullanılan maksimum seviye
 - `adaptive_refined_cell_fraction`: Seviye > 1 olan hücre oranı
@@ -1066,9 +1066,9 @@ A_micro : Mikro-pürüzlülük katkısı
 
 `--outdir` altında oluşturulan dosyalar:
 
-### CSV Dosyaları
+### Excel Dosyası
 
-#### `results_long.csv`
+#### `results.xlsx` / `results_long`
 
 Her satır bir (GSD, method) kombinasyonunu temsil eder.
 
@@ -1084,7 +1084,7 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `runtime_sec` | float | Hesaplama süresi (saniye, IO hariç) |
 | `note` | str | Parametre özeti |
 
-**Adaptive bilinear için ek kolonlar (CSV sonunda):**
+**Adaptive bilinear için ek kolonlar (results_long sayfasında):**
 
 | Kolon | Tip | Açıklama |
 |:------|:---:|:---------|
@@ -1093,7 +1093,7 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `adaptive_refined_cell_fraction` | float | Seviye > 1 olan hücre oranı |
 | `adaptive_total_subcells_evaluated` | int | Toplam değerlendirilen alt-hücre sayısı |
 
-**Sector adaptive Jenness için ek kolonlar (CSV sonunda):**
+**Sector adaptive Jenness için ek kolonlar (results_long sayfasında):**
 
 | Kolon | Tip | Açıklama |
 |:------|:---:|:---------|
@@ -1115,11 +1115,11 @@ Buradaki seviye, sector adaptive subdivision seviyesidir:
 | `micro_ratio` | float | A_micro / A_total |
 | `sigma_m` | float | Kullanılan sigma değeri (metre) |
 
-#### `results_wide.csv`
+#### `results.xlsx` / `results_wide`
 
-Satır = GSD, Sütunlar = `{method}_{metric}` formatında pivot tablo.
+Satir = GSD, sutunlar = sadece hesaplanan yontemlerin `A3D` alan kolonlari (`{method}_A3D`).
 
-#### `results_roi_long.csv` (ROI verilirse)
+#### `results.xlsx` / `results_roi_long` (ROI verilirse)
 
 Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
 
@@ -1301,7 +1301,7 @@ pytest --cov=surface_area --cov-report=html
 - ✅ Hidrolik ve termal erozyon simülasyonu
 - ✅ `generate_synthetic_tif.py` ile native-grid referans alan çıktısı
 - ✅ ROI (GeoJSON/Shapefile) desteği (mask + fraction modları)
-- ✅ CSV/JSON/PNG çıktıları
+- ✅ Excel/JSON/PNG çıktıları
 
 ---
 

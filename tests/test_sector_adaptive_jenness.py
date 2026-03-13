@@ -275,12 +275,12 @@ def test_sector_adaptive_jenness_cli_smoke_writes_results_and_metadata(tmp_path:
     )
     assert rc == 0
 
-    results_path = outdir / "results_long.csv"
+    results_path = outdir / "results.xlsx"
     info_path = outdir / "run_info.json"
     assert results_path.exists()
     assert info_path.exists()
 
-    df = pd.read_csv(results_path)
+    df = pd.read_excel(results_path, sheet_name="results_long")
     assert set(df["method"]) == {"sector_adaptive_jenness_integral"}
     assert {"sector_jenness_avg_level", "sector_jenness_max_level_used", "sector_jenness_refined_fraction"} <= set(
         df.columns

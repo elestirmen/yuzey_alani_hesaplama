@@ -40,6 +40,10 @@ def _demo_dem(rows: int, cols: int, *, dx: float, dy: float) -> np.ndarray:
     return (plane + waves).astype(np.float64, copy=False)
 
 
+def _read_results_sheet(workbook_path: Path, sheet_name: str) -> pd.DataFrame:
+    return pd.read_excel(workbook_path, sheet_name=sheet_name)
+
+
 def test_runconfig_to_argv_includes_workers(tmp_path: Path) -> None:
     dem_path = tmp_path / "dem.tif"
     _write_dem_geotiff(
@@ -84,7 +88,7 @@ def test_runconfig_to_argv_supports_native_gsd(tmp_path: Path) -> None:
     argv = cfg.to_argv()
 
     assert "--gsd" in argv
-    assert argv[argv.index("--gsd") + 1 : argv.index("--methods")] == ["native", "2"]
+    assert argv[argv.index("--gsd") + 1 : argv.index("--gsd") + 3] == ["native", "2"]
 
 
 def test_cli_parallel_workers_matches_serial(tmp_path: Path) -> None:
@@ -115,10 +119,14 @@ def test_cli_parallel_workers_matches_serial(tmp_path: Path) -> None:
     assert rc_parallel == 0
 
     cols = ["gsd_m", "method", "dx", "dy", "A2D", "A3D", "ratio", "valid_cells", "note"]
-    df_serial = pd.read_csv(out_serial / "results_long.csv")[cols].sort_values(["gsd_m", "method"]).reset_index(
+    df_serial = _read_results_sheet(out_serial / "results.xlsx", "results_long")[cols].sort_values(
+        ["gsd_m", "method"]
+    ).reset_index(
         drop=True
     )
-    df_parallel = pd.read_csv(out_parallel / "results_long.csv")[cols].sort_values(["gsd_m", "method"]).reset_index(
+    df_parallel = _read_results_sheet(out_parallel / "results.xlsx", "results_long")[cols].sort_values(
+        ["gsd_m", "method"]
+    ).reset_index(
         drop=True
     )
 
@@ -156,7 +164,7 @@ def test_cli_native_gsd_uses_source_grid_without_resampling(tmp_path: Path) -> N
 
     assert rc == 0
 
-    df = pd.read_csv(outdir / "results_long.csv")
+    df = _read_results_sheet(outdir / "results.xlsx", "results_long")
     assert len(df) == 1
     row = df.iloc[0]
     assert np.isclose(float(row["dx"]), 2.0, rtol=0.0, atol=1e-12)
@@ -165,6 +173,65 @@ def test_cli_native_gsd_uses_source_grid_without_resampling(tmp_path: Path) -> N
 
     info_payload = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
     assert info_payload["params"]["gsd_specs"] == ["native"]
+
+
+def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_wide.tif"
+    outdir = tmp_path / "out_wide"
+    z = _demo_dem(30, 30, dx=1.0, dy=1.0)
+    _write_dem_geotiff(dem_path, z, dx=1.0, dy=1.0, crs=CRS.from_epsg(3857))
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "1",
+            "2",
+            "--methods",
+            "gradient_multiplier",
+            "tin_2tri_cell",
+        ]
+    )
+
+    assert rc == 0
+
+    workbook_path = outdir / "results.xlsx"
+    assert workbook_path.exists()
+
+    xls = pd.ExcelFile(workbook_path)
+    assert set(xls.sheet_names) == {"results_long", "results_wide", "run_info"}
+
+    df_wide = _read_results_sheet(workbook_path, "results_wide").sort_values("gsd_m").reset_index(drop=True)
+    assert list(df_wide.columns) == ["gsd_m", "gradient_multiplier_A3D", "tin_2tri_cell_A3D"]
+
+    df_long = _read_results_sheet(workbook_path, "results_long")
+    expected = (
+        df_long.pivot(index="gsd_m", columns="method", values="A3D")
+        .rename(columns=lambda method: f"{method}_A3D")
+        .reset_index()
+        .sort_values("gsd_m")
+        .reset_index(drop=True)
+    )
+
+    assert np.allclose(df_wide["gsd_m"].to_numpy(), expected["gsd_m"].to_numpy(), rtol=0.0, atol=1e-12)
+    assert np.allclose(
+        df_wide["gradient_multiplier_A3D"].to_numpy(),
+        expected["gradient_multiplier_A3D"].to_numpy(),
+        rtol=0.0,
+        atol=1e-9,
+    )
+    assert np.allclose(
+        df_wide["tin_2tri_cell_A3D"].to_numpy(),
+        expected["tin_2tri_cell_A3D"].to_numpy(),
+        rtol=0.0,
+        atol=1e-9,
+    )
 
 
 def test_compute_methods_on_raster_workers_matches_serial(tmp_path: Path) -> None:
