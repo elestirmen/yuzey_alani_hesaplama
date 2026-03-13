@@ -66,3 +66,15 @@ def test_generate_synthetic_parser_respects_config_seed_default() -> None:
     parser = generate_synthetic_tif.build_parser(defaults=generate_synthetic_tif.SynthConfig(seed=123))
     args = parser.parse_args([])
     assert args.seed == 123
+
+
+def test_generate_synthetic_parser_supports_all_presets_default_and_flag() -> None:
+    import generate_synthetic_tif
+
+    parser = generate_synthetic_tif.build_parser(defaults=generate_synthetic_tif.SynthConfig(all_presets=True))
+
+    args = parser.parse_args([])
+    assert args.all_presets is True
+
+    args = parser.parse_args(["--no-all-presets"])
+    assert args.all_presets is False

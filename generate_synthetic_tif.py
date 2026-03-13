@@ -85,6 +85,42 @@ from surface_area.synthetic import (
 
 
 # =============================================================================
+# TEK NOKTADAN DÜZENLENEBİLEN VARSAYILAN CONFIG
+# =============================================================================
+
+config: dict[str, object] = {
+    # Çıktı GeoTIFF yolu.
+    # Şablonlar: {preset}, {rows}, {cols}, {dx}, {dy}, {seed}, {timestamp}
+    "out": "out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}_{timestamp}.tif",
+    # Arazi tipi. Geçerli seçenekler için "preset_choices" alanına bakabilirsin.
+    "preset": "mountain",
+    # True ise tek preset yerine tüm yüzey tipleri için ayrı ayrı dosya üretir.
+    "all_presets": True,
+    # Raster boyutu
+    "rows": 8192,
+    "cols": 8192,
+    # Piksel boyutu (metre)
+    "dx": 0.05,
+    "dy": None,
+    # Rastgele tohum. None olursa her çalıştırmada farklı seed üretilir.
+    "seed": 0,
+    # Yüzey karakteri
+    "relief": 1.0,
+    "roughness_m": 0.75,
+    # GeoTIFF coğrafi bilgileri
+    "crs": "EPSG:32636",
+    "origin_x": 500_000.0,
+    "origin_y": 4_500_000.0,
+    # Nodata ayarları
+    "nodata": -9999.0,
+    "nodata_holes": 0,
+    "nodata_radius_m": 12.0,
+    # Referans olsun diye burada tutuluyor; parser bunu otomatik kullanıyor.
+    "preset_choices": list(SYNTHETIC_PRESETS),
+}
+
+
+# =============================================================================
 # PARAMETRELER İÇİN SINIRLAR VE VARSAYILANLAR
 # =============================================================================
 
@@ -122,14 +158,15 @@ class SynthConfig:
     """Sentetik DSM üretimi için yapılandırma parametreleri.
 
     Bu sınıf, script'i IDE'den doğrudan çalıştırırken kullanılacak
-    varsayılan değerleri tanımlar. Değerleri değiştirmek için
-    DEFAULT_SYNTH_CONFIG'u düzenleyin.
+    varsayılan değerleri tanımlar. Varsayılanları tek yerden değiştirmek için
+    dosya başındaki ``config`` sözlüğünü düzenleyin.
 
     Attributes:
         out: Çıktı GeoTIFF dosya yolu (şablon destekler: {preset}, {rows}, vb.)
         preset: Arazi tipi - Gerçekçi: mountain, valley, hills, coastal, plateau,
                 canyon, volcanic, glacial, karst, alluvial
                 Test: plane, waves, crater_field, terraced, patchwork, mixed
+        all_presets: True ise tek preset yerine tüm preset'ler için çıktı üretir
         rows: Raster satır sayısı
         cols: Raster sütun sayısı
         dx: X yönünde piksel boyutu (metre)
@@ -146,70 +183,79 @@ class SynthConfig:
     """
 
     out: str = field(
-        default="out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}_{timestamp}.tif",
+        default=str(config["out"]),
         metadata={"help": "Çıktı GeoTIFF yolu ({preset}, {rows}, {cols}, {dx}, {seed}, {timestamp} şablonları desteklenir)"},
     )
     preset: str = field(
-        default="mountain",   #"mountain",  # Varsayılan olarak gerçekçi dağlık arazi
+        default=str(config["preset"]),
         metadata={"help": f"Arazi tipi. Seçenekler: {', '.join(SYNTHETIC_PRESETS)}"},
     )
+    all_presets: bool = field(
+        default=bool(config["all_presets"]),
+        metadata={"help": "True ise seçili preset yerine tüm yüzey tipleri için çıktı üretir"},
+    )
     rows: int = field(
-        default=4096,
+        default=int(config["rows"]),
         metadata={"help": f"Raster satır sayısı ({MIN_ROWS}-{MAX_ROWS})"},
     )
     cols: int = field(
-        default=4096,
+        default=int(config["cols"]),
         metadata={"help": f"Raster sütun sayısı ({MIN_COLS}-{MAX_COLS})"},
     )
     dx: float = field(
-        default=0.5,
+        default=float(config["dx"]),
         metadata={"help": f"X piksel boyutu metre ({MIN_PIXEL_SIZE}-{MAX_PIXEL_SIZE})"},
     )
     dy: float | None = field(
-        default=None,
+        default=config["dy"],
         metadata={"help": "Y piksel boyutu metre (None ise dx kullanılır)"},
     )
     seed: int | None = field(
-        default=0,
+        default=config["seed"],
         metadata={"help": "Rastgele sayı tohumu (sabit değer = tekrarlanabilir, None = her seferinde farklı)"},
     )
     relief: float = field(
-        default=1.0,
+        default=float(config["relief"]),
         metadata={"help": f"Makro rölyef çarpanı ({MIN_RELIEF}-{MAX_RELIEF})"},
     )
     roughness_m: float = field(
-        default=0.75,
+        default=float(config["roughness_m"]),
         metadata={"help": f"Mikro pürüzlülük genliği metre ({MIN_ROUGHNESS}-{MAX_ROUGHNESS})"},
     )
     crs: str = field(
-        default="EPSG:32636",
+        default=str(config["crs"]),
         metadata={"help": "CRS string (örn: EPSG:32636 = UTM Zone 36N)"},
     )
     origin_x: float = field(
-        default=500_000.0,
+        default=float(config["origin_x"]),
         metadata={"help": "Sol üst köşe X koordinatı (metre)"},
     )
     origin_y: float = field(
-        default=4_500_000.0,
+        default=float(config["origin_y"]),
         metadata={"help": "Sol üst köşe Y koordinatı (metre)"},
     )
     nodata: float | None = field(
-        default=-9999.0,
+        default=config["nodata"],
         metadata={"help": "Nodata değeri (None ile devre dışı bırakılır)"},
     )
     nodata_holes: int = field(
-        default=0,
+        default=int(config["nodata_holes"]),
         metadata={"help": f"Eklenecek dairesel nodata delik sayısı (0-{MAX_NODATA_HOLES})"},
     )
     nodata_radius_m: float = field(
-        default=12.0,
+        default=float(config["nodata_radius_m"]),
         metadata={"help": f"Nodata delikleri için taban yarıçap metre ({MIN_NODATA_RADIUS}-{MAX_NODATA_RADIUS})"},
     )
 
 
+def _config_synth_kwargs(config_map: dict[str, object]) -> dict[str, object]:
+    valid_keys = set(SynthConfig.__dataclass_fields__.keys())  # type: ignore[attr-defined]
+    return {k: v for k, v in config_map.items() if k in valid_keys}
+
+
 # IDE'den çalıştırırken kullanılacak varsayılan yapılandırma.
-# Bu değerleri değiştirerek farklı sentetik veriler üretebilirsiniz.
-DEFAULT_SYNTH_CONFIG = SynthConfig()
+# Bu değerleri değiştirmek için dosya başındaki config sözlüğünü düzenleyin.
+DEFAULT_SYNTH_CONFIG = SynthConfig(**_config_synth_kwargs(config))
 
 
 # =============================================================================
@@ -537,6 +583,9 @@ TEST PATTERNLERİ:
 
   # Nodata delikleri ile
   python generate_synthetic_tif.py --preset mountain --nodata_holes 20
+
+  # Tüm yüzey tipleri için çıktı üret
+  python generate_synthetic_tif.py --all-presets
         """,
     )
 
@@ -554,6 +603,12 @@ TEST PATTERNLERİ:
         choices=SYNTHETIC_PRESETS,
         default=defaults.preset,
         help=_help("preset"),
+    )
+    p.add_argument(
+        "--all-presets",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.all_presets,
+        help=_help("all_presets"),
     )
     p.add_argument(
         "--rows", "-r",
@@ -651,38 +706,61 @@ TEST PATTERNLERİ:
 
 
 # =============================================================================
-# ANA FONKSİYON
+# ÇALIŞTIRMA YARDIMCILARI
 # =============================================================================
 
-def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH_CONFIG) -> int:
-    """Script'in ana giriş noktası.
-
-    Args:
-        argv: Komut satırı argümanları (None ise sys.argv kullanılır)
-        defaults: Varsayılan yapılandırma
-
-    Returns:
-        Çıkış kodu (0=başarılı, 1=hata)
-    """
-    args = build_parser(defaults=defaults).parse_args(argv)
-    quiet = args.quiet
-
-    # dy değerini belirle
-    dy = float(args.dx if args.dy is None else args.dy)
-
-    # Seed değerini belirle (None ise rastgele üret)
+def _resolve_actual_seed(seed: int | None) -> int:
+    """Kullanılacak gerçek seed değerini belirler."""
     import random
-    if args.seed is None:
-        # Rastgele seed üret (0 ile 2^31-1 arası)
-        actual_seed = random.randint(0, 2**31 - 1)
-    else:
-        actual_seed = int(args.seed)
 
-    # =========================================================================
-    # PARAMETRE DOĞRULAMA (Kodun başında)
-    # =========================================================================
+    if seed is None:
+        return random.randint(0, 2**31 - 1)
+    return int(seed)
+
+
+def _resolve_generation_out_path(
+    out_template: Path,
+    *,
+    preset: str,
+    rows: int,
+    cols: int,
+    dx: float,
+    dy: float,
+    actual_seed: int,
+    timestamp: str,
+) -> Path:
+    """Tek bir preset üretimi için çıktı yolunu çözer."""
+    return _format_out_path(
+        out_template,
+        params={
+            "preset": preset,
+            "rows": rows,
+            "cols": cols,
+            "dx": dx,
+            "dy": dy,
+            "seed": actual_seed,
+            "timestamp": timestamp,
+        },
+    )
+
+
+def _run_single_generation(
+    args: argparse.Namespace,
+    *,
+    dy: float,
+    actual_seed: int,
+    out: Path,
+    quiet: bool,
+    batch_index: int,
+    batch_total: int,
+) -> int:
+    """Tek bir preset için üretim akışını çalıştırır."""
     if not quiet:
-        _print_header()
+        if batch_total > 1:
+            print()
+            print("=" * 60)
+            print(f"[{batch_index}/{batch_total}] PRESET: {args.preset}")
+            print("=" * 60)
         print("Parametreler doğrulanıyor...")
 
     validation_errors = validate_parameters(
@@ -722,30 +800,6 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
     if not quiet:
         _print_parameters(args, dy, memory_str, file_size_str, actual_seed)
         _print_preset_info(args.preset)
-
-    # =========================================================================
-    # ÇIKTI YOLUNU HAZIRLA
-    # =========================================================================
-    # Zaman damgası oluştur (her çalıştırmada farklı dosya adı için)
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    try:
-        out: Path = _format_out_path(
-            args.out,
-            params={
-                "preset": str(args.preset),
-                "rows": int(args.rows),
-                "cols": int(args.cols),
-                "dx": float(args.dx),
-                "dy": dy,
-                "seed": actual_seed,
-                "timestamp": timestamp,
-            },
-        )
-    except ValueError as e:
-        print(f"❌ Çıktı yolu hatası: {e}")
-        return 1
 
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -886,6 +940,90 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         print("Bu dosyayı yüzey alanı hesaplama ile test etmek için:")
         suggested_outdir = out.parent / "out_run"
         print(f'  python main.py run --dem "{out}" --outdir "{suggested_outdir}"')
+
+    return 0
+
+
+def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH_CONFIG) -> int:
+    """Script'in ana giriş noktası.
+
+    Args:
+        argv: Komut satırı argümanları (None ise sys.argv kullanılır)
+        defaults: Varsayılan yapılandırma
+
+    Returns:
+        Çıkış kodu (0=başarılı, 1=hata)
+    """
+    args = build_parser(defaults=defaults).parse_args(argv)
+    quiet = args.quiet
+
+    if not quiet:
+        _print_header()
+
+    target_presets = list(SYNTHETIC_PRESETS) if args.all_presets else [str(args.preset)]
+    if not quiet and args.all_presets:
+        print(f"Tüm presetler modu etkin. {len(target_presets)} adet yüzey tipi üretilecek.")
+
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    planned_runs: list[tuple[argparse.Namespace, float, int, Path]] = []
+    seen_outputs: dict[Path, str] = {}
+
+    for preset in target_presets:
+        run_args = argparse.Namespace(**vars(args))
+        run_args.preset = preset
+        dy = float(run_args.dx if run_args.dy is None else run_args.dy)
+        actual_seed = _resolve_actual_seed(run_args.seed)
+
+        try:
+            out = _resolve_generation_out_path(
+                Path(run_args.out),
+                preset=str(run_args.preset),
+                rows=int(run_args.rows),
+                cols=int(run_args.cols),
+                dx=float(run_args.dx),
+                dy=dy,
+                actual_seed=actual_seed,
+                timestamp=timestamp,
+            )
+        except ValueError as e:
+            print(f"❌ Çıktı yolu hatası: {e}")
+            return 1
+
+        existing_preset = seen_outputs.get(out)
+        if existing_preset is not None:
+            print("❌ Çıktı yolu çakışması tespit edildi.")
+            print(f"   {existing_preset!r} ve {preset!r} aynı dosyaya yazıyor: {out}")
+            print("   Tüm presetler modunda --out şablonunda {preset} veya başka ayırt edici alanlar kullanın.")
+            return 1
+
+        seen_outputs[out] = preset
+        planned_runs.append((run_args, dy, actual_seed, out))
+
+    generated_outputs: list[Path] = []
+    total_runs = len(planned_runs)
+    for batch_index, (run_args, dy, actual_seed, out) in enumerate(planned_runs, start=1):
+        rc = _run_single_generation(
+            run_args,
+            dy=dy,
+            actual_seed=actual_seed,
+            out=out,
+            quiet=quiet,
+            batch_index=batch_index,
+            batch_total=total_runs,
+        )
+        if rc != 0:
+            return rc
+        generated_outputs.append(out)
+
+    if not quiet and total_runs > 1:
+        print()
+        print("=" * 60)
+        print("TOPLU ÜRETİM TAMAMLANDI")
+        print("=" * 60)
+        for out in generated_outputs:
+            print(f"  - {out}")
 
     return 0
 

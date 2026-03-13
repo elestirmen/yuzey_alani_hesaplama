@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+from collections import Counter
 from dataclasses import dataclass, field
 import sys
 from pathlib import Path
@@ -41,6 +43,8 @@ METHOD_PRESET_NOTES: dict[str, str] = {
     "jenness_focus": "Jenness ailesi uzerinde calisiyorsan en anlamli grup budur. Klasik Jenness ile sector-adaptive Jenness'i yan yana kosar.",
     "full": "Tum metodlari calistirir. En kapsamli secimdir ama sure en cok bunda uzar.",
 }
+
+TIF_SUFFIXES = {".tif", ".tiff"}
 
 
 def _normalize_method_list(methods: list[str]) -> list[str]:
@@ -93,16 +97,65 @@ def _normalize_gsd_values(gsd_values: list[float | str]) -> list[float | str]:
     return normalized
 
 
+def _resolve_dem_inputs(dem_path: Path) -> list[Path]:
+    if not dem_path.exists():
+        raise ValueError(f"DEM not found: {dem_path}")
+    if dem_path.is_file():
+        return [dem_path]
+    if not dem_path.is_dir():
+        raise ValueError(f"DEM must be a file or directory, got: {dem_path}")
+
+    dem_paths = sorted(
+        [path for path in dem_path.iterdir() if path.is_file() and path.suffix.lower() in TIF_SUFFIXES],
+        key=lambda path: path.name.lower(),
+    )
+    if not dem_paths:
+        raise ValueError(f"No DEM GeoTIFF files found in directory: {dem_path}")
+    return dem_paths
+
+
+def _validate_outdir_root(outdir_path: Path) -> None:
+    if outdir_path.exists() and not outdir_path.is_dir():
+        raise ValueError(f"outdir must be a directory path, got file: {outdir_path}")
+
+
+def _resolve_batch_outdirs(dem_paths: list[Path], outdir_root: Path) -> list[tuple[Path, Path]]:
+    stem_counts = Counter(path.stem.lower() for path in dem_paths)
+    used_names: set[str] = set()
+    batch_jobs: list[tuple[Path, Path]] = []
+
+    for dem_path in dem_paths:
+        stem_key = dem_path.stem.lower()
+        if stem_counts[stem_key] == 1:
+            base_name = dem_path.stem
+        else:
+            suffix_token = dem_path.suffix.lower().lstrip(".") or "tif"
+            base_name = f"{dem_path.stem}_{suffix_token}"
+
+        candidate = base_name
+        suffix_index = 2
+        while candidate.lower() in used_names:
+            candidate = f"{base_name}_{suffix_index}"
+            suffix_index += 1
+
+        used_names.add(candidate.lower())
+        batch_jobs.append((dem_path, outdir_root / candidate))
+
+    return batch_jobs
+
+
 config: dict[str, object] = {
     # ============================================================
     # 1) TEMEL DOSYALAR
     # ============================================================
-    # Analiz edilecek DEM/DSM dosyasi.
-    # Buraya GeoTIFF yolunu yaziyorsun.
-    # Ornek: "vadi_dsm.tif"
-    "dem": "vadi_dsm.tif",
+    # Analiz edilecek DEM/DSM girdisi.
+    # Buraya tek bir GeoTIFF dosyasi ya da icinde .tif/.tiff dosyalari olan bir klasor yazabilirsin.
+    # Ornek tek dosya: "vadi_dsm.tif"
+    # Ornek klasor  : "dem_arsivi"
+    "dem": "out_synth",
     # Sonuclarin yazilacagi klasor.
-    # CSV dosyalari, grafikler ve gecici ciktilar burada olusur.
+    # Tek dosya verirsen CSV dosyalari, grafikler ve gecici ciktilar dogrudan burada olusur.
+    # Klasor verirsen her GeoTIFF icin bunun altinda ayri bir alt klasor acilir.
     # Ornek: "out_vadi"
     "outdir": "out_vadi",
     # ============================================================
@@ -139,7 +192,7 @@ config: dict[str, object] = {
     # -> method_choice yok sayilir, sadece bu iki metot calisir.
     #
     # Hazir seceneklerin anlami:
-    #   default       -> ana karsilastirma grubu, sector-adaptive odakli
+    #   default       -> ana karsilastirma grubu, sector-adaptive odakli, multiscale kapali
     #   fast          -> hizli grup, buyuk veri icin iyi
     #   balanced      -> default + bilinear integral benchmark
     #   jenness_focus -> Jenness gelistirirken en uygun grup
@@ -204,6 +257,8 @@ config: dict[str, object] = {
     "sector_jenness_max_level": 5,
     "sector_jenness_min_samples": 3,
     # Asagidaki 2 alan sadece multiscale_decomposed_area icin anlamlidir.
+    # Sadece toplam alan istiyorsan multiscale'i hic acma; bu ayarlari degistirmen gerekmez.
+    # Varsayilan "default" preset zaten multiscale calistirmaz.
     #
     # sigma_mode:
     # mult -> sigma_m listesindeki degerler GSD'nin kati gibi okunur.
@@ -232,11 +287,21 @@ class RunConfig:
 
     dem: str = field(
         default="vadi_dsm.tif",
-        metadata={"help": "Analiz edilecek DEM/DSM GeoTIFF dosyasi. Goreli veya tam yol verebilirsin."},
+        metadata={
+            "help": (
+                "Analiz edilecek DEM/DSM girdisi. Tek bir GeoTIFF dosyasi veya icinde .tif/.tiff bulunan "
+                "bir klasor verebilirsin."
+            )
+        },
     )
     outdir: str = field(
         default="out_vadi",
-        metadata={"help": "Sonuclarin yazilacagi klasor. Yoksa otomatik olusturulur."},
+        metadata={
+            "help": (
+                "Sonuclarin yazilacagi klasor. Tek dosya icin sonuc dosyalari burada olusur. "
+                "Klasor girdiysen her DEM icin bunun altinda ayri bir alt klasor olusturulur."
+            )
+        },
     )
     gsd: list[float | str] = field(
         default_factory=lambda: ["native", 0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
@@ -253,7 +318,8 @@ class RunConfig:
         metadata={
             "help": (
                 f"Hazir metot grubu. Secenekler: {', '.join(METHOD_PRESETS)}. "
-                "methods=None ise bu alan kullanilir. Elle tek tek metot yazmak istemiyorsan en kolay secim budur."
+                "methods=None ise bu alan kullanilir. Elle tek tek metot yazmak istemiyorsan en kolay secim budur. "
+                "default preset toplam alan karsilastirmasi icin uygundur ve multiscale'i acmaz."
             )
         },
     )
@@ -357,6 +423,7 @@ class RunConfig:
         metadata={
             "help": (
                 "Bu parametre sadece multiscale_decomposed_area icin anlamlidir. "
+                "Sadece toplam alan istiyorsan bu alani dusunme; multiscale kapaliysa kullanilmaz. "
                 "'mult' secilirse sigma_m degerleri GSD'nin kati gibi yorumlanir; 'm' secilirse dogrudan metre kabul edilir."
             )
         },
@@ -366,6 +433,7 @@ class RunConfig:
         metadata={
             "help": (
                 "Bu parametre sadece multiscale_decomposed_area icin kullanilir. "
+                "Sadece toplam alan istiyorsan bu listeyi degistirmen gerekmez. "
                 "Kullanilacak sigma degerlerinin listesidir; anlamini sigma_mode belirler."
             )
         },
@@ -393,16 +461,12 @@ class RunConfig:
     def resolved_methods(self) -> list[str]:
         return _resolve_methods(self.method_choice, self.methods)
 
-    def validate(self) -> None:
-        dem_path = Path(self.dem)
-        if not dem_path.exists():
-            raise ValueError(f"DEM not found: {dem_path}")
-        if dem_path.is_dir():
-            raise ValueError(f"DEM must be a file, got directory: {dem_path}")
+    def resolved_dem_paths(self) -> list[Path]:
+        return _resolve_dem_inputs(Path(self.dem))
 
-        outdir_path = Path(self.outdir)
-        if outdir_path.exists() and not outdir_path.is_dir():
-            raise ValueError(f"outdir must be a directory path, got file: {outdir_path}")
+    def validate(self) -> None:
+        _ = self.resolved_dem_paths()
+        _validate_outdir_root(Path(self.outdir))
 
         if not self.gsd:
             raise ValueError("gsd list must not be empty")
@@ -438,17 +502,16 @@ class RunConfig:
         if int(self.workers) <= 0:
             raise ValueError("workers must be > 0")
 
-    def to_argv(self) -> list[str]:
-        self.validate()
+    def _build_single_run_argv(self, *, dem: str | Path, outdir: str | Path) -> list[str]:
         resolved_methods = self.resolved_methods()
         normalized_gsd = _normalize_gsd_values(self.gsd)
 
         argv: list[str] = [
             "run",
             "--dem",
-            self.dem,
+            str(dem),
             "--outdir",
-            self.outdir,
+            str(outdir),
             "--gsd",
             *[
                 surface_area_cli.GSD_NATIVE_TOKEN if isinstance(v, str) else f"{float(v):g}"
@@ -488,6 +551,12 @@ class RunConfig:
             argv.append("--keep_resampled")
         return argv
 
+    def to_argv(self) -> list[str]:
+        self.validate()
+        if Path(self.dem).is_dir():
+            raise ValueError("to_argv() requires a single DEM file; dem points to a directory")
+        return self._build_single_run_argv(dem=self.dem, outdir=self.outdir)
+
 
 def _config_run_kwargs(config_map: dict[str, object]) -> dict[str, object]:
     valid_keys = set(RunConfig.__dataclass_fields__.keys())  # type: ignore[attr-defined]
@@ -499,7 +568,7 @@ DEFAULT_RUN_CONFIG = RunConfig(**_config_run_kwargs(config))
 
 def _print_main_help() -> None:
     print("Usage:")
-    print("  python main.py run --dem <path> --outdir <dir> [--gsd ...] [--methods ...] [--plots]")
+    print("  python main.py run --dem <path-or-dir> --outdir <dir> [--gsd ...] [--methods ...] [--plots]")
     print("  python main.py              # runs with the top-level config mapping")
     print("  python main.py --help")
     print("")
@@ -520,17 +589,96 @@ def _print_main_help() -> None:
         print(f"  - effective methods with current config: INVALID ({e})")
 
 
+def _run_surface_area_batch(
+    *,
+    dem_root: Path,
+    outdir_root: Path,
+    batch_jobs: list[tuple[Path, Path]],
+    run_single,
+) -> int:
+    if dem_root.is_dir():
+        print(f"DEM directory detected: {dem_root}")
+        print(f"Found {len(batch_jobs)} GeoTIFF file(s). Outputs will be written under: {outdir_root}")
+
+    total_jobs = len(batch_jobs)
+    for index, (dem_path, outdir_path) in enumerate(batch_jobs, start=1):
+        if dem_root.is_dir():
+            print()
+            print("=" * 60)
+            print(f"[{index}/{total_jobs}] DEM: {dem_path.name}")
+            print(f"Output directory: {outdir_path}")
+            print("=" * 60)
+
+        rc = int(run_single(dem_path, outdir_path))
+        if rc != 0:
+            return rc
+    return 0
+
+
+def _run_main_config(run_config: RunConfig) -> int:
+    run_config.validate()
+    dem_root = Path(run_config.dem)
+    if dem_root.is_file():
+        return int(surface_area_cli.main(run_config.to_argv()))
+
+    outdir_root = Path(run_config.outdir)
+    batch_jobs = _resolve_batch_outdirs(run_config.resolved_dem_paths(), outdir_root)
+    return _run_surface_area_batch(
+        dem_root=dem_root,
+        outdir_root=outdir_root,
+        batch_jobs=batch_jobs,
+        run_single=lambda dem_path, outdir_path: surface_area_cli.main(
+            run_config._build_single_run_argv(dem=dem_path, outdir=outdir_path)
+        ),
+    )
+
+
+def _dispatch_cli_args(argv: list[str]) -> int:
+    parser = surface_area_cli.build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command != "run":
+        return int(surface_area_cli.main(argv))
+
+    dem_root = Path(args.dem)
+    outdir_root = Path(args.outdir)
+    try:
+        dem_paths = _resolve_dem_inputs(dem_root)
+        _validate_outdir_root(outdir_root)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+    if dem_root.is_file():
+        return int(surface_area_cli.cmd_run(args))
+
+    batch_jobs = _resolve_batch_outdirs(dem_paths, outdir_root)
+
+    def _run_single(dem_path: Path, outdir_path: Path) -> int:
+        batch_args = argparse.Namespace(**vars(args))
+        batch_args.dem = dem_path
+        batch_args.outdir = outdir_path
+        return int(surface_area_cli.cmd_run(batch_args))
+
+    return _run_surface_area_batch(
+        dem_root=dem_root,
+        outdir_root=outdir_root,
+        batch_jobs=batch_jobs,
+        run_single=_run_single,
+    )
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if len(argv) == 1 and argv[0] in {"-h", "--help", "help"}:
         _print_main_help()
         return 0
     if argv:
-        return int(surface_area_cli.main(argv))
+        return _dispatch_cli_args(argv)
 
     try:
         run_config = RunConfig(**_config_run_kwargs(config))
-        return int(surface_area_cli.main(run_config.to_argv()))
+        return _run_main_config(run_config)
     except TypeError as e:
         print(f"Invalid main.py config mapping: {e}", file=sys.stderr)
         return 2
