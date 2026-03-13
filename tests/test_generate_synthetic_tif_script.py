@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -58,6 +59,63 @@ def test_generate_synthetic_tif_script(tmp_path) -> None:
     assert "valid_samples" in grid
     assert "nodata_samples" in grid
     assert abs(float(ref["planar_area_m2"]) - float(grid["valid_cells"]) * float(params["dx"]) * float(params["dy"])) < 1e-9
+
+
+def test_generate_synthetic_tif_script_supports_analytic_ground_truth_and_multiresolution(tmp_path) -> None:
+    import generate_synthetic_tif
+
+    out = tmp_path / "analytic_gaussian.tif"
+    rc = generate_synthetic_tif.main(
+        [
+            "--out",
+            str(out),
+            "--preset",
+            "analytic_gaussian_hill",
+            "--no-all-presets",
+            "--dx",
+            "1",
+            "--extent_width",
+            "32",
+            "--extent_height",
+            "24",
+            "--seed",
+            "11",
+            "--eval_gsd",
+            "2",
+            "4",
+            "--continuous_base_samples",
+            "33",
+            "--continuous_max_levels",
+            "2",
+            "--complexity",
+            "--write_complexity_rasters",
+            "--quiet",
+        ]
+    )
+    assert rc == 0
+
+    import rasterio
+
+    with rasterio.open(out) as ds:
+        assert ds.width == 32
+        assert ds.height == 24
+        assert ds.dtypes[0] == "float32"
+
+    payload = json.loads(out.with_suffix(".reference.json").read_text(encoding="utf-8"))
+    assert payload["terrain_family"] == "analytic"
+    assert payload["continuous_ground_truth"] is not None
+    assert payload["native_grid_reference"]["surface_area_m2"] >= payload["native_grid_reference"]["planar_area_m2"]
+    assert payload["generation_parameters"]["physical_extent"]["width_m"] == 32.0
+    assert payload["generation_parameters"]["physical_extent"]["height_m"] == 24.0
+    assert len(payload["multi_resolution"]) == 3
+    assert payload["complexity_summary"] is not None
+    assert len(payload["complexity_files"]) == 5
+
+    manifest_csv = out.with_suffix(".reference_levels.csv")
+    assert manifest_csv.exists()
+
+    for row in payload["multi_resolution"]:
+        assert Path(row["tif_file"]).exists()
 
 
 def test_generate_synthetic_parser_respects_config_seed_default() -> None:

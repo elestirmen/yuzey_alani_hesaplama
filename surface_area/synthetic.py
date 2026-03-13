@@ -34,6 +34,13 @@ from typing import Callable
 
 import numpy as np
 
+from surface_area.analytic_surfaces import (
+    ANALYTIC_PRESETS,
+    build_analytic_surface,
+    circular_hole_mask,
+    generate_circular_holes,
+)
+
 
 SurfaceFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
@@ -62,7 +69,8 @@ _REALISTIC_PRESETS = [
 ]
 
 # Tüm preset'ler
-SYNTHETIC_PRESETS = _TEST_PRESETS + _REALISTIC_PRESETS
+RASTER_FIRST_PRESETS = _TEST_PRESETS + _REALISTIC_PRESETS
+SYNTHETIC_PRESETS = RASTER_FIRST_PRESETS + ANALYTIC_PRESETS
 
 
 @dataclass(frozen=True, slots=True)
@@ -1749,6 +1757,7 @@ def generate_synthetic_dsm(
     preset_n = preset.strip().lower()
     if preset_n not in set(SYNTHETIC_PRESETS):
         raise ValueError(f"Unknown synthetic preset: {preset!r}. Choices: {SYNTHETIC_PRESETS}")
+    analytic_preset_set = set(ANALYTIC_PRESETS)
 
     progress_prefix = f"synth:{preset_n}"
 
@@ -1763,7 +1772,17 @@ def generate_synthetic_dsm(
     # ==========================================================================
     # GERÇEKÇİ ARAZİ TİPLERİ
     # ==========================================================================
-    if preset_n == "mountain":
+    if preset_n in analytic_preset_set:
+        analytic_surface = build_analytic_surface(
+            preset_n,
+            extent_width_m=grid.width,
+            extent_height_m=grid.height,
+            relief=float(relief),
+            roughness_m=float(roughness_m),
+            seed=seed_i,
+        )
+        z = analytic_surface.evaluate(x, y).astype(np.float64, copy=False)
+    elif preset_n == "mountain":
         z = _generate_mountain(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
     elif preset_n == "valley":
         z = _generate_valley(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
@@ -1881,7 +1900,7 @@ def generate_synthetic_dsm(
     # ==========================================================================
     # MİKRO PÜRÜZLÜLÜK (tüm preset'ler için)
     # ==========================================================================
-    if roughness_m > 0:
+    if preset_n not in analytic_preset_set and roughness_m > 0:
         px = 0.5 * (dx + dy)
         sigmas_px = [0.9 / px, 2.0 / px, 5.0 / px]
         amps = [1.0, 0.55, 0.25]
@@ -1902,18 +1921,16 @@ def generate_synthetic_dsm(
         r0 = float(nodata_radius_m)
         if r0 <= 0:
             raise ValueError("nodata_radius_m must be > 0")
-        holes_mask = np.zeros((rows, cols), dtype=bool)
-        holes_i = int(nodata_holes)
-        if progress is not None:
-            progress.update(label=f"{progress_prefix}: nodata", current=0, total=holes_i)
-
-        for i in range(holes_i):
-            x0 = float(rng_holes.uniform(0.0, grid.width))
-            y0 = float(rng_holes.uniform(0.0, grid.height))
-            r = float(rng_holes.uniform(0.7 * r0, 1.4 * r0))
-            holes_mask |= (x - x0) ** 2 + (y - y0) ** 2 <= r * r
-            if progress is not None:
-                progress.update(label=f"{progress_prefix}: nodata", current=i + 1, total=holes_i)
+        holes = generate_circular_holes(
+            rng=rng_holes,
+            count=int(nodata_holes),
+            base_radius_m=r0,
+            width_m=grid.width,
+            height_m=grid.height,
+            progress=progress,
+            progress_label=f"{progress_prefix}: nodata",
+        )
+        holes_mask = circular_hole_mask(x, y, holes)
         z = z.copy()
         z[holes_mask] = float(nodata_value)
 

@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from surface_area.analytic_surfaces import build_analytic_surface, compute_continuous_surface_reference
 from surface_area.methods import (
     compute_area_bilinear_integral,
     compute_area_gradient,
@@ -135,3 +136,27 @@ def test_reference_surface_area_reports_cell_counts_consistently() -> None:
     assert res.valid_samples == int(valid_samples.sum())
     assert res.nodata_samples == int((~valid_samples).sum())
     assert abs(res.planar_area_m2 - (res.valid_cells * 2.0)) < 1e-12
+
+
+def test_analytic_tilted_plane_continuous_reference_matches_closed_form() -> None:
+    surface = build_analytic_surface(
+        "analytic_tilted_plane",
+        extent_width_m=40.0,
+        extent_height_m=24.0,
+        relief=1.25,
+        roughness_m=0.0,
+        seed=7,
+    )
+
+    ref = compute_continuous_surface_reference(
+        surface,
+        extent_width_m=40.0,
+        extent_height_m=24.0,
+    )
+
+    slope_x = float(surface.parameters["slope_x"])
+    slope_y = float(surface.parameters["slope_y"])
+    expected = 40.0 * 24.0 * math.sqrt(1.0 + slope_x * slope_x + slope_y * slope_y)
+
+    assert ref.integration_method == "exact_closed_form"
+    assert abs(ref.surface_area_m2 - expected) / expected < 1e-12
