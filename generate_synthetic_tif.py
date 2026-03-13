@@ -47,16 +47,16 @@ TEST PATTERNLERİ (Eski):
     python generate_synthetic_tif.py
 
     # Vadi ve akarsu yatağı
-    python generate_synthetic_tif.py --preset valley --rows 5000 --cols 5000
+    python generate_synthetic_tif.py --target valley --rows 5000 --cols 5000
 
     # Yüksek çözünürlüklü kıyı şeridi
-    python generate_synthetic_tif.py --preset coastal --rows 8000 --cols 8000 --dx 0.5
+    python generate_synthetic_tif.py --target coastal --rows 8000 --cols 8000 --dx 0.5
 
     # Volkanik arazi
-    python generate_synthetic_tif.py --preset volcanic --relief 1.5
+    python generate_synthetic_tif.py --target volcanic --relief 1.5
 
     # Buzul vadisi
-    python generate_synthetic_tif.py --preset glacial --rows 6000 --cols 6000
+    python generate_synthetic_tif.py --target glacial --rows 6000 --cols 6000
 
 PERFORMANS NOTLARI:
 ------------------
@@ -105,19 +105,23 @@ from surface_area.terrain_complexity import compute_complexity_descriptors, summ
 # TEK NOKTADAN DÜZENLENEBİLEN VARSAYILAN CONFIG
 # =============================================================================
 
+TARGET_GROUP_CHOICES = ("raster_first", "analytic", "all")
+TARGET_CHOICES = tuple(SYNTHETIC_PRESETS) + TARGET_GROUP_CHOICES
+
 config: dict[str, object] = {
     # Çıktı GeoTIFF yolu.
     # Şablonlar: {preset}, {rows}, {cols}, {dx}, {dy}, {seed}, {timestamp}
     "out": "out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}_{timestamp}.tif",
-    # Arazi tipi. Geçerli seçenekler için "preset_choices" alanına bakabilirsin.
-    "preset": "mountain",
-    # Toplu üretimde hangi benchmark ailesinin döneceğini belirler.
-    # raster_first -> mevcut gerçekçi + test preset'leri
-    # analytic     -> yeni sürekli yüzey benchmark'ları
-    # all          -> iki aileyi birlikte üretir
-    "benchmark_family": "raster_first",
-    # True ise tek preset yerine tüm yüzey tipleri için ayrı ayrı dosya üretir.
-    "all_presets": True,
+    # Tek seçim parametresi:
+    # - Bir preset adı verirsen yalnızca o yüzey üretilir.
+    #   Örnekler: mountain, valley, coastal, analytic_gaussian_hill
+    # - Bir grup adı verirsen o gruba ait tüm yüzey tipleri üretilir.
+    #   raster_first -> gerçekçi arazi + klasik raster-first test preset'leri
+    #   analytic     -> sürekli ground truth üretebilen analitik benchmark preset'leri
+    #   all          -> tanımlı tüm preset'ler
+    # Bu alan, eski preset + benchmark_family + all_presets kombinasyonunun
+    # yerine geçen tek giriş noktasıdır.
+    "target": "all",
     # Raster boyutu
     "rows": 8192,
     "cols": 8192,
@@ -133,6 +137,8 @@ config: dict[str, object] = {
     # Yüzey karakteri
     "relief": 1.0,
     "roughness_m": 0.75,
+    # fBm/turbulence kullanan preset'lerde oktav bazlı worker sayısı (1 = kapalı).
+    "fbm_workers": 8,
     # GeoTIFF coğrafi bilgileri
     "crs": "EPSG:32636",
     "origin_x": 500_000.0,
@@ -154,8 +160,7 @@ config: dict[str, object] = {
     "write_complexity_rasters": False,
     "complexity_window": 5,
     # Referans olsun diye burada tutuluyor; parser bunu otomatik kullanıyor.
-    "preset_choices": list(SYNTHETIC_PRESETS),
-    "benchmark_family_choices": ["raster_first", "analytic", "all"],
+    "target_choices": list(TARGET_CHOICES),
 }
 
 
@@ -178,6 +183,7 @@ MIN_RELIEF = 0.0
 MAX_RELIEF = 1000.0
 MIN_ROUGHNESS = 0.0
 MAX_ROUGHNESS = 100.0
+MIN_FBM_WORKERS = 1
 
 # Nodata hole limitleri
 MAX_NODATA_HOLES = 1000
@@ -187,7 +193,7 @@ MAX_NODATA_RADIUS = 1000.0  # 1 km
 # Bellek tahmini için float32 boyutu
 BYTES_PER_PIXEL = 4  # float32
 
-BENCHMARK_FAMILY_CHOICES = ("raster_first", "analytic", "all")
+BENCHMARK_FAMILY_CHOICES = TARGET_GROUP_CHOICES
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,10 +232,15 @@ class SynthConfig:
 
     Attributes:
         out: Çıktı GeoTIFF dosya yolu (şablon destekler: {preset}, {rows}, vb.)
-        preset: Arazi tipi - Gerçekçi: mountain, valley, hills, coastal, plateau,
-                canyon, volcanic, glacial, karst, alluvial
-                Test: plane, waves, crater_field, terraced, patchwork, mixed
-        all_presets: True ise tek preset yerine tüm preset'ler için çıktı üretir
+        target: Tek seçim parametresi.
+                Bir preset adı verilirse yalnızca o yüzey üretilir.
+                Örnekler: mountain, valley, coastal, analytic_gaussian_hill
+                Bir grup adı verilirse script o gruba ait tüm yüzeyleri üretir.
+                raster_first = gerçekçi arazi + klasik raster-first test preset'leri
+                analytic     = sürekli ground truth üreten tüm analitik benchmark'lar
+                all          = tanımlı tüm preset'ler
+                Böylece kullanıcı tek raster ile toplu benchmark modu arasında
+                aynı parametre üzerinden geçiş yapabilir.
         rows: Raster satır sayısı
         cols: Raster sütun sayısı
         dx: X yönünde piksel boyutu (metre)
@@ -237,6 +248,7 @@ class SynthConfig:
         seed: Rastgele sayı üreteci tohumu (tekrarlanabilirlik için)
         relief: Makro rölyef çarpanı (0=düz, 1=normal, >1=abartılı)
         roughness_m: Mikro pürüzlülük genliği (metre)
+        fbm_workers: fBm/turbulence kullanan preset'lerde oktav bazlı worker sayısı
         crs: Koordinat referans sistemi (örn: EPSG:32636)
         origin_x: Sol üst köşe X koordinatı
         origin_y: Sol üst köşe Y koordinatı
@@ -249,17 +261,19 @@ class SynthConfig:
         default=str(config["out"]),
         metadata={"help": "Çıktı GeoTIFF yolu ({preset}, {rows}, {cols}, {dx}, {seed}, {timestamp} şablonları desteklenir)"},
     )
-    preset: str = field(
-        default=str(config["preset"]),
-        metadata={"help": f"Arazi tipi. Seçenekler: {', '.join(SYNTHETIC_PRESETS)}"},
-    )
-    benchmark_family: str = field(
-        default=str(config["benchmark_family"]),
-        metadata={"help": "Toplu üretimde kullanılacak benchmark ailesi: raster_first | analytic | all"},
-    )
-    all_presets: bool = field(
-        default=bool(config["all_presets"]),
-        metadata={"help": "True ise seçili preset yerine tüm yüzey tipleri için çıktı üretir"},
+    target: str = field(
+        default=str(config["target"]),
+        metadata={
+            "help": (
+                "Tek seçim parametresi. Bir preset adı verirsen yalnızca o yüzeyi üretir "
+                "(örn: mountain, valley, analytic_gaussian_hill). "
+                "Bir grup adı verirsen toplu üretim yapar: "
+                "raster_first = gerçekçi + klasik raster-first preset'ler, "
+                "analytic = tüm analitik benchmark'lar, "
+                "all = tanımlı tüm preset'ler. "
+                f"Geçerli seçenekler: {', '.join(TARGET_CHOICES)}"
+            )
+        },
     )
     rows: int = field(
         default=int(config["rows"]),
@@ -296,6 +310,10 @@ class SynthConfig:
     roughness_m: float = field(
         default=float(config["roughness_m"]),
         metadata={"help": f"Mikro pürüzlülük genliği metre ({MIN_ROUGHNESS}-{MAX_ROUGHNESS})"},
+    )
+    fbm_workers: int = field(
+        default=int(config["fbm_workers"]),
+        metadata={"help": f"fBm/turbulence kullanan preset'lerde worker sayısı ({MIN_FBM_WORKERS}+; 1=kapalı)"},
     )
     crs: str = field(
         default=str(config["crs"]),
@@ -385,9 +403,9 @@ def validate_parameters(
     dx: float,
     dy: float | None,
     preset: str,
-    benchmark_family: str,
     relief: float,
     roughness_m: float,
+    fbm_workers: int,
     nodata_holes: int,
     nodata_radius_m: float,
     extent_width: float | None = None,
@@ -450,11 +468,6 @@ def validate_parameters(
     # Preset kontrolü
     if preset not in SYNTHETIC_PRESETS:
         errors.append(f"Geçersiz preset: '{preset}'. Geçerli seçenekler: {', '.join(SYNTHETIC_PRESETS)}")
-    if benchmark_family not in BENCHMARK_FAMILY_CHOICES:
-        errors.append(
-            f"benchmark_family geçersiz: '{benchmark_family}'. Geçerli seçenekler: {', '.join(BENCHMARK_FAMILY_CHOICES)}"
-        )
-
     # Relief kontrolü
     if relief < MIN_RELIEF:
         errors.append(f"relief en az {MIN_RELIEF} olmalı, verilen: {relief}")
@@ -466,6 +479,9 @@ def validate_parameters(
         errors.append(f"roughness_m en az {MIN_ROUGHNESS} olmalı, verilen: {roughness_m}")
     elif roughness_m > MAX_ROUGHNESS:
         errors.append(f"roughness_m en fazla {MAX_ROUGHNESS} olabilir, verilen: {roughness_m}")
+
+    if int(fbm_workers) < MIN_FBM_WORKERS:
+        errors.append(f"fbm_workers en az {MIN_FBM_WORKERS} olmalı, verilen: {fbm_workers}")
 
     # Nodata holes kontrolü
     if nodata_holes < 0:
@@ -617,27 +633,29 @@ def _resolve_grid_geometry(args: argparse.Namespace) -> ResolvedGridGeometry:
     )
 
 
-def _effective_all_presets(args: argparse.Namespace, argv: list[str] | None) -> bool:
-    if not argv:
-        return bool(args.all_presets)
-    tokens = set(argv)
-    if "--all-presets" in tokens or "--no-all-presets" in tokens:
-        return bool(args.all_presets)
-    if "--preset" in tokens or "-p" in tokens:
-        return False
-    return bool(args.all_presets)
+def _normalize_target_argument(args: argparse.Namespace) -> str:
+    """Resolve the single public target from hidden legacy CLI arguments if needed."""
+    legacy_preset = getattr(args, "legacy_preset", None)
+    legacy_family = getattr(args, "legacy_benchmark_family", None)
+    legacy_all = getattr(args, "legacy_all_presets", None)
+
+    if legacy_all is True:
+        return str(legacy_family or "all")
+    if legacy_preset is not None:
+        return str(legacy_preset)
+    if legacy_family is not None:
+        return str(legacy_family)
+    return str(args.target)
 
 
-def _resolve_target_presets(args: argparse.Namespace, argv: list[str] | None) -> list[str]:
-    if not _effective_all_presets(args, argv):
-        return [str(args.preset)]
-
-    family = str(args.benchmark_family)
-    if family == "raster_first":
+def _resolve_target_presets(target: str) -> list[str]:
+    if target == "raster_first":
         return list(RASTER_FIRST_PRESETS)
-    if family == "analytic":
+    if target == "analytic":
         return list(ANALYTIC_PRESETS)
-    return list(SYNTHETIC_PRESETS)
+    if target == "all":
+        return list(SYNTHETIC_PRESETS)
+    return [str(target)]
 
 
 def _surface_area_result_to_dict(ref_area: SurfaceAreaResult) -> dict[str, float | int | None]:
@@ -765,6 +783,7 @@ def _print_parameters(
     print(f"  Seed:                   {seed_info}")
     print(f"  Relief çarpanı:         {args.relief}")
     print(f"  Roughness:              {args.roughness_m}m")
+    print(f"  fBm workers:            {args.fbm_workers}")
     if args.extent_width is not None and args.extent_height is not None:
         print(f"  İstenen extent:         {float(args.extent_height):.1f}m x {float(args.extent_width):.1f}m")
     if args.eval_gsd:
@@ -852,6 +871,7 @@ def _build_generation_parameters(
     analytic_parameters: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
+        "target": getattr(args, "target", args.preset),
         "preset": args.preset,
         "benchmark_family": terrain_family,
         "rows": geometry.rows,
@@ -861,6 +881,7 @@ def _build_generation_parameters(
         "seed": actual_seed,
         "relief": args.relief,
         "roughness_m": args.roughness_m,
+        "fbm_workers": args.fbm_workers,
         "crs": args.crs,
         "origin_x": args.origin_x,
         "origin_y": args.origin_y,
@@ -960,31 +981,31 @@ TEST PATTERNLERİ:
   python generate_synthetic_tif.py
 
   # Vadi ve akarsu yatağı
-  python generate_synthetic_tif.py --preset valley --rows 5000 --cols 5000
+  python generate_synthetic_tif.py --target valley --rows 5000 --cols 5000
 
   # Yüksek çözünürlüklü kıyı şeridi
-  python generate_synthetic_tif.py --preset coastal --rows 8000 --cols 8000 --dx 0.5
+  python generate_synthetic_tif.py --target coastal --rows 8000 --cols 8000 --dx 0.5
 
   # Volkanik arazi (abartılı rölyef)
-  python generate_synthetic_tif.py --preset volcanic --relief 1.5
+  python generate_synthetic_tif.py --target volcanic --relief 1.5
 
   # Buzul vadisi
-  python generate_synthetic_tif.py --preset glacial
+  python generate_synthetic_tif.py --target glacial
 
   # Karstik arazi (düdenler ve hum'lar)
-  python generate_synthetic_tif.py --preset karst --rows 4000 --cols 4000
+  python generate_synthetic_tif.py --target karst --rows 4000 --cols 4000
 
   # Nodata delikleri ile
-  python generate_synthetic_tif.py --preset mountain --nodata_holes 20
+  python generate_synthetic_tif.py --target mountain --nodata_holes 20
 
-  # Tüm yüzey tipleri için çıktı üret
-  python generate_synthetic_tif.py --all-presets
+  # Raster-first ailesindeki tüm yüzeyleri üret
+  python generate_synthetic_tif.py --target raster_first
 
   # Analitik Gaussian hill, fiziksel extent ile native GSD tanımı
-  python generate_synthetic_tif.py --preset analytic_gaussian_hill --no-all-presets --dx 0.05 --extent_width 40 --extent_height 30
+  python generate_synthetic_tif.py --target analytic_gaussian_hill --dx 0.05 --extent_width 40 --extent_height 30
 
   # Analitik hibrit yüzey + çoklu çözünürlük benchmark çıktıları
-  python generate_synthetic_tif.py --preset analytic_hybrid_multiscale --no-all-presets --dx 0.1 --extent_width 60 --extent_height 60 --eval_gsd 0.5 1 2 5
+  python generate_synthetic_tif.py --target analytic_hybrid_multiscale --dx 0.1 --extent_width 60 --extent_height 60 --eval_gsd 0.5 1 2 5
         """,
     )
 
@@ -998,22 +1019,25 @@ TEST PATTERNLERİ:
 
     # Temel parametreler
     p.add_argument(
-        "--preset", "-p",
-        choices=SYNTHETIC_PRESETS,
-        default=defaults.preset,
-        help=_help("preset"),
+        "--target", "-t",
+        choices=TARGET_CHOICES,
+        default=defaults.target,
+        help=_help("target"),
     )
+    # Geriye dönük uyumluluk: eski CLI seçenekleri gizli tutulur.
+    p.add_argument("--preset", "-p", dest="legacy_preset", choices=SYNTHETIC_PRESETS, help=argparse.SUPPRESS)
     p.add_argument(
         "--benchmark_family",
+        dest="legacy_benchmark_family",
         choices=BENCHMARK_FAMILY_CHOICES,
-        default=defaults.benchmark_family,
-        help=_help("benchmark_family"),
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--all-presets",
+        dest="legacy_all_presets",
         action=argparse.BooleanOptionalAction,
-        default=defaults.all_presets,
-        help=_help("all_presets"),
+        default=None,
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--rows", "-r",
@@ -1070,6 +1094,12 @@ TEST PATTERNLERİ:
         type=float,
         default=defaults.roughness_m,
         help=_help("roughness_m"),
+    )
+    p.add_argument(
+        "--fbm-workers",
+        type=int,
+        default=defaults.fbm_workers,
+        help=_help("fbm_workers"),
     )
 
     # Coğrafi parametreler
@@ -1257,6 +1287,7 @@ def _run_raster_first_generation(
             seed=actual_seed,
             relief=float(args.relief),
             roughness_m=float(args.roughness_m),
+            fbm_workers=int(args.fbm_workers),
             nodata_value=float(args.nodata) if args.nodata is not None else None,
             nodata_holes=int(args.nodata_holes),
             nodata_radius_m=float(args.nodata_radius_m),
@@ -1662,9 +1693,9 @@ def _run_single_generation(
         dx=geometry.dx,
         dy=geometry.dy,
         preset=args.preset,
-        benchmark_family=args.benchmark_family,
         relief=args.relief,
         roughness_m=args.roughness_m,
+        fbm_workers=args.fbm_workers,
         nodata_holes=args.nodata_holes,
         nodata_radius_m=args.nodata_radius_m,
         extent_width=args.extent_width,
@@ -1716,15 +1747,16 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         Çıkış kodu (0=başarılı, 1=hata)
     """
     args = build_parser(defaults=defaults).parse_args(argv)
+    args.target = _normalize_target_argument(args)
     quiet = args.quiet
 
     if not quiet:
         _print_header()
 
-    target_presets = _resolve_target_presets(args, argv)
+    target_presets = _resolve_target_presets(str(args.target))
     effective_all = len(target_presets) > 1
     if not quiet and effective_all:
-        print(f"Tüm presetler modu etkin. {len(target_presets)} adet yüzey tipi üretilecek.")
+        print(f"Toplu hedef modu etkin ({args.target}). {len(target_presets)} adet yüzey tipi üretilecek.")
 
     from datetime import datetime
 

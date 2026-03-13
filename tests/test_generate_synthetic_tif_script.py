@@ -14,7 +14,7 @@ def test_generate_synthetic_tif_script(tmp_path) -> None:
         [
             "--out",
             str(out),
-            "--preset",
+            "--target",
             "mixed",
             "--rows",
             "80",
@@ -69,9 +69,8 @@ def test_generate_synthetic_tif_script_supports_analytic_ground_truth_and_multir
         [
             "--out",
             str(out),
-            "--preset",
+            "--target",
             "analytic_gaussian_hill",
-            "--no-all-presets",
             "--dx",
             "1",
             "--extent_width",
@@ -126,13 +125,13 @@ def test_generate_synthetic_parser_respects_config_seed_default() -> None:
     assert args.seed == 123
 
 
-def test_generate_synthetic_parser_supports_all_presets_default_and_flag() -> None:
+def test_generate_synthetic_parser_supports_target_group_default() -> None:
     import generate_synthetic_tif
 
-    parser = generate_synthetic_tif.build_parser(defaults=generate_synthetic_tif.SynthConfig(all_presets=True))
+    parser = generate_synthetic_tif.build_parser(defaults=generate_synthetic_tif.SynthConfig(target="all"))
 
     args = parser.parse_args([])
-    assert args.all_presets is True
+    assert args.target == "all"
 
-    args = parser.parse_args(["--no-all-presets"])
-    assert args.all_presets is False
+    args = parser.parse_args(["--target", "mountain"])
+    assert args.target == "mountain"

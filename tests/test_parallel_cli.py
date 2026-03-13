@@ -206,9 +206,8 @@ def test_main_run_includes_synthetic_ground_truth_columns_when_reference_sidecar
         [
             "--out",
             str(dem_path),
-            "--preset",
+            "--target",
             "analytic_gaussian_hill",
-            "--no-all-presets",
             "--dx",
             "1",
             "--extent_width",

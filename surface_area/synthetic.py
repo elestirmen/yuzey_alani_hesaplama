@@ -28,6 +28,7 @@ TEST PATTERNLERİ:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import math
 from typing import Callable
@@ -67,6 +68,55 @@ _REALISTIC_PRESETS = [
     "karst",
     "alluvial",
 ]
+
+
+def _octave_specs(
+    *,
+    dx: float,
+    dy: float,
+    octaves: int,
+    persistence: float,
+    lacunarity: float,
+    base_wavelength_m: float,
+) -> list[tuple[float, float]]:
+    """Return `(sigma_px, amplitude)` pairs for the usable octaves."""
+    px = 0.5 * (dx + dy)
+    amplitude = 1.0
+    specs: list[tuple[float, float]] = []
+
+    for i in range(int(octaves)):
+        wavelength = base_wavelength_m / (lacunarity ** i)
+        sigma_px = wavelength / px
+        if sigma_px < 0.5:
+            break
+        specs.append((float(sigma_px), float(amplitude)))
+        amplitude *= persistence
+
+    return specs
+
+
+def _smoothed_noise_octave_from_seed(
+    *,
+    seed: int,
+    rows: int,
+    cols: int,
+    sigma_px: float,
+) -> np.ndarray:
+    """Generate one normalized smoothed-noise octave for parallel execution."""
+    try:
+        from scipy.ndimage import gaussian_filter
+    except Exception as e:
+        raise RuntimeError("scipy is required for fBm noise generation") from e
+
+    rng = np.random.default_rng(int(seed))
+    white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
+    smoothed = gaussian_filter(white, sigma=float(sigma_px), mode="wrap")
+
+    std = float(smoothed.std(dtype=np.float64))
+    if std > 0:
+        smoothed = smoothed / std
+
+    return smoothed
 
 # Tüm preset'ler
 RASTER_FIRST_PRESETS = _TEST_PRESETS + _REALISTIC_PRESETS
@@ -518,6 +568,7 @@ def _fbm_noise(
     persistence: float = 0.5,
     lacunarity: float = 2.0,
     base_wavelength_m: float = 500.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_label: str = "fBm",
 ) -> np.ndarray:
@@ -543,42 +594,57 @@ def _fbm_noise(
     except Exception as e:
         raise RuntimeError("scipy is required for fBm noise generation") from e
 
-    px = 0.5 * (dx + dy)  # Ortalama piksel boyutu
-    acc = np.zeros((rows, cols), dtype=np.float64)
-    amplitude = 1.0
-    total_amplitude = 0.0
+    worker_count = int(fbm_workers)
+    if worker_count < 1:
+        raise ValueError("fbm_workers must be >= 1")
 
-    octaves_i = int(octaves)
-    effective_octaves = 0
-    for i in range(octaves_i):
-        wavelength = base_wavelength_m / (lacunarity**i)
-        sigma_px = wavelength / px
-        if sigma_px < 0.5:
-            break
-        effective_octaves += 1
+    specs = _octave_specs(
+        dx=dx,
+        dy=dy,
+        octaves=int(octaves),
+        persistence=float(persistence),
+        lacunarity=float(lacunarity),
+        base_wavelength_m=float(base_wavelength_m),
+    )
+    effective_octaves = len(specs)
+    total_amplitude = float(sum(amplitude for _, amplitude in specs))
+    acc = np.zeros((rows, cols), dtype=np.float64)
 
     if progress is not None and effective_octaves > 0:
         progress.update(label=progress_label, current=0, total=effective_octaves)
 
-    for i in range(effective_octaves):
-        # Bu oktav için dalga boyu ve sigma
-        wavelength = base_wavelength_m / (lacunarity ** i)
-        sigma_px = wavelength / px
+    if worker_count == 1 or effective_octaves <= 1:
+        for i, (sigma_px, amplitude) in enumerate(specs):
+            white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
+            smoothed = gaussian_filter(white, sigma=sigma_px, mode="wrap")
 
-        # Beyaz gürültü üret ve yumuşat
-        white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
-        smoothed = gaussian_filter(white, sigma=sigma_px, mode="wrap")
+            std = float(smoothed.std(dtype=np.float64))
+            if std > 0:
+                smoothed = smoothed / std
 
-        # Normalize et
-        std = float(smoothed.std(dtype=np.float64))
-        if std > 0:
-            smoothed = smoothed / std
+            acc += amplitude * smoothed
+            if progress is not None:
+                progress.update(label=progress_label, current=i + 1, total=effective_octaves)
+    else:
+        seeds = rng.integers(0, 2**31, size=effective_octaves)
+        futures: dict[object, float] = {}
+        with ThreadPoolExecutor(max_workers=min(worker_count, effective_octaves), thread_name_prefix="fbm") as executor:
+            for i, (sigma_px, amplitude) in enumerate(specs):
+                future = executor.submit(
+                    _smoothed_noise_octave_from_seed,
+                    seed=int(seeds[i]),
+                    rows=rows,
+                    cols=cols,
+                    sigma_px=sigma_px,
+                )
+                futures[future] = amplitude
 
-        acc += amplitude * smoothed
-        total_amplitude += amplitude
-        amplitude *= persistence
-        if progress is not None:
-            progress.update(label=progress_label, current=i + 1, total=effective_octaves)
+            completed = 0
+            for future in as_completed(futures):
+                acc += futures[future] * future.result()
+                completed += 1
+                if progress is not None:
+                    progress.update(label=progress_label, current=completed, total=effective_octaves)
 
     # Toplam genliğe göre normalize et
     if total_amplitude > 0:
@@ -599,6 +665,7 @@ def _ridge_noise(
     lacunarity: float = 2.0,
     base_wavelength_m: float = 400.0,
     ridge_sharpness: float = 2.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_label: str = "ridges",
 ) -> np.ndarray:
@@ -621,6 +688,7 @@ def _ridge_noise(
         persistence=persistence,
         lacunarity=lacunarity,
         base_wavelength_m=base_wavelength_m,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=progress_label,
     )
@@ -642,6 +710,7 @@ def _turbulence_noise(
     persistence: float = 0.5,
     lacunarity: float = 2.0,
     base_wavelength_m: float = 300.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_label: str = "turbulence",
 ) -> np.ndarray:
@@ -651,41 +720,60 @@ def _turbulence_noise(
     except Exception as e:
         raise RuntimeError("scipy is required") from e
 
-    px = 0.5 * (dx + dy)
+    worker_count = int(fbm_workers)
+    if worker_count < 1:
+        raise ValueError("fbm_workers must be >= 1")
+
+    specs = _octave_specs(
+        dx=dx,
+        dy=dy,
+        octaves=int(octaves),
+        persistence=float(persistence),
+        lacunarity=float(lacunarity),
+        base_wavelength_m=float(base_wavelength_m),
+    )
+    effective_octaves = len(specs)
+    total_amplitude = float(sum(amplitude for _, amplitude in specs))
     acc = np.zeros((rows, cols), dtype=np.float64)
-    amplitude = 1.0
-    total_amplitude = 0.0
-
-    octaves_i = int(octaves)
-    effective_octaves = 0
-    for i in range(octaves_i):
-        wavelength = base_wavelength_m / (lacunarity ** i)
-        sigma_px = wavelength / px
-
-        if sigma_px < 0.5:
-            break
-        effective_octaves += 1
 
     if progress is not None and effective_octaves > 0:
         progress.update(label=progress_label, current=0, total=effective_octaves)
 
-    for i in range(effective_octaves):
-        wavelength = base_wavelength_m / (lacunarity ** i)
-        sigma_px = wavelength / px
+    if worker_count == 1 or effective_octaves <= 1:
+        for i, (sigma_px, amplitude) in enumerate(specs):
+            white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
+            smoothed = gaussian_filter(white, sigma=sigma_px, mode="wrap")
 
-        white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
-        smoothed = gaussian_filter(white, sigma=sigma_px, mode="wrap")
+            std = float(smoothed.std(dtype=np.float64))
+            if std > 0:
+                smoothed = smoothed / std
 
-        std = float(smoothed.std(dtype=np.float64))
-        if std > 0:
-            smoothed = smoothed / std
+            acc += amplitude * np.abs(smoothed)
+            if progress is not None:
+                progress.update(label=progress_label, current=i + 1, total=effective_octaves)
+    else:
+        seeds = rng.integers(0, 2**31, size=effective_octaves)
+        futures: dict[object, float] = {}
+        with ThreadPoolExecutor(
+            max_workers=min(worker_count, effective_octaves),
+            thread_name_prefix="turbulence",
+        ) as executor:
+            for i, (sigma_px, amplitude) in enumerate(specs):
+                future = executor.submit(
+                    _smoothed_noise_octave_from_seed,
+                    seed=int(seeds[i]),
+                    rows=rows,
+                    cols=cols,
+                    sigma_px=sigma_px,
+                )
+                futures[future] = amplitude
 
-        # Mutlak değer al (turbulence)
-        acc += amplitude * np.abs(smoothed)
-        total_amplitude += amplitude
-        amplitude *= persistence
-        if progress is not None:
-            progress.update(label=progress_label, current=i + 1, total=effective_octaves)
+            completed = 0
+            for future in as_completed(futures):
+                acc += futures[future] * np.abs(future.result())
+                completed += 1
+                if progress is not None:
+                    progress.update(label=progress_label, current=completed, total=effective_octaves)
 
     if total_amplitude > 0:
         acc = acc / total_amplitude
@@ -800,6 +888,7 @@ def _generate_mountain(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 800.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "mountain",
 ) -> np.ndarray:
@@ -825,6 +914,7 @@ def _generate_mountain(
         persistence=0.55,
         lacunarity=2.1,
         base_wavelength_m=grid.width * 0.4,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: fbm",
     )
@@ -840,6 +930,7 @@ def _generate_mountain(
         persistence=0.5,
         base_wavelength_m=grid.width * 0.25,
         ridge_sharpness=2.5,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: ridges",
     )
@@ -886,6 +977,7 @@ def _generate_valley(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 200.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "valley",
 ) -> np.ndarray:
@@ -925,6 +1017,7 @@ def _generate_valley(
         octaves=6,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.3,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: hills",
     )
@@ -949,6 +1042,7 @@ def _generate_valley(
         octaves=4,
         persistence=0.4,
         base_wavelength_m=grid.width * 0.1,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: floodplain",
     )
@@ -978,6 +1072,7 @@ def _generate_hills(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 150.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "hills",
 ) -> np.ndarray:
@@ -1002,6 +1097,7 @@ def _generate_hills(
         persistence=0.4,  # Düşük persistence = daha yumuşak
         lacunarity=1.8,
         base_wavelength_m=grid.width * 0.5,  # Geniş dalgalar
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: base",
     )
@@ -1017,6 +1113,7 @@ def _generate_hills(
         persistence=0.35,
         lacunarity=2.0,
         base_wavelength_m=grid.width * 0.2,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: detail",
     )
@@ -1050,6 +1147,7 @@ def _generate_coastal(
     rng: np.random.Generator,
     relief: float,
     sea_level: float = 0.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "coastal",
 ) -> np.ndarray:
@@ -1075,6 +1173,7 @@ def _generate_coastal(
         octaves=4,
         persistence=0.5,
         base_wavelength_m=grid.height * 0.3,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: coastline",
     )
@@ -1096,6 +1195,7 @@ def _generate_coastal(
         octaves=6,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.25,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: land",
     )
@@ -1130,6 +1230,7 @@ def _generate_plateau(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 500.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "plateau",
 ) -> np.ndarray:
@@ -1153,6 +1254,7 @@ def _generate_plateau(
         octaves=4,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.2,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: boundary",
     )
@@ -1181,6 +1283,7 @@ def _generate_plateau(
         octaves=4,
         persistence=0.3,
         base_wavelength_m=grid.width * 0.3,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: top",
     )
@@ -1195,6 +1298,7 @@ def _generate_plateau(
         octaves=5,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.2,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: lower",
     )
@@ -1226,6 +1330,7 @@ def _generate_canyon(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 400.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "canyon",
 ) -> np.ndarray:
@@ -1250,6 +1355,7 @@ def _generate_canyon(
         octaves=5,
         persistence=0.45,
         base_wavelength_m=grid.width * 0.4,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: plateau",
     )
@@ -1309,6 +1415,7 @@ def _generate_canyon(
         octaves=3,
         persistence=0.4,
         base_wavelength_m=grid.width * 0.1,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: floor",
     )
@@ -1325,6 +1432,7 @@ def _generate_volcanic(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 300.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "volcanic",
 ) -> np.ndarray:
@@ -1414,6 +1522,7 @@ def _generate_volcanic(
         octaves=5,
         persistence=0.5,
         base_wavelength_m=grid.width * 0.1,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: roughness",
     )
@@ -1430,6 +1539,7 @@ def _generate_glacial(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 400.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "glacial",
 ) -> np.ndarray:
@@ -1454,6 +1564,7 @@ def _generate_glacial(
         octaves=6,
         persistence=0.55,
         base_wavelength_m=grid.width * 0.35,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: mountain",
     )
@@ -1484,6 +1595,7 @@ def _generate_glacial(
         octaves=3,
         persistence=0.3,
         base_wavelength_m=grid.width * 0.15,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: floor",
     )
@@ -1518,6 +1630,7 @@ def _generate_karst(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 250.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "karst",
 ) -> np.ndarray:
@@ -1542,6 +1655,7 @@ def _generate_karst(
         octaves=5,
         persistence=0.45,
         base_wavelength_m=grid.width * 0.3,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: base",
     )
@@ -1592,6 +1706,7 @@ def _generate_karst(
         octaves=5,
         persistence=0.6,
         base_wavelength_m=grid.width * 0.05,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: roughness",
     )
@@ -1608,6 +1723,7 @@ def _generate_alluvial(
     rng: np.random.Generator,
     relief: float,
     base_elevation: float = 50.0,
+    fbm_workers: int = 1,
     progress: ProgressPrinter | None = None,
     progress_prefix: str = "alluvial",
 ) -> np.ndarray:
@@ -1639,6 +1755,7 @@ def _generate_alluvial(
         octaves=4,
         persistence=0.35,
         base_wavelength_m=grid.width * 0.15,
+        fbm_workers=fbm_workers,
         progress=progress,
         progress_label=f"{progress_prefix}: micro",
     )
@@ -1709,6 +1826,7 @@ def generate_synthetic_dsm(
     seed: int = 0,
     relief: float = 1.0,
     roughness_m: float = 0.75,
+    fbm_workers: int = 1,
     nodata_value: float | None = None,
     nodata_holes: int = 0,
     nodata_radius_m: float = 12.0,
@@ -1724,6 +1842,7 @@ def generate_synthetic_dsm(
         seed: Rastgele sayı tohumu
         relief: Rölyef çarpanı (1.0 = normal)
         roughness_m: Mikro pürüzlülük genliği (metre)
+        fbm_workers: fBm/turbulence kullanan preset'lerde oktav bazlı worker sayısı
         nodata_value: Nodata değeri
         nodata_holes: Nodata delik sayısı
         nodata_radius_m: Nodata delik yarıçapı
@@ -1783,25 +1902,115 @@ def generate_synthetic_dsm(
         )
         z = analytic_surface.evaluate(x, y).astype(np.float64, copy=False)
     elif preset_n == "mountain":
-        z = _generate_mountain(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_mountain(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "valley":
-        z = _generate_valley(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_valley(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "hills":
-        z = _generate_hills(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_hills(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "coastal":
-        z = _generate_coastal(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_coastal(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "plateau":
-        z = _generate_plateau(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_plateau(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "canyon":
-        z = _generate_canyon(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_canyon(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "volcanic":
-        z = _generate_volcanic(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_volcanic(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "glacial":
-        z = _generate_glacial(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_glacial(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "karst":
-        z = _generate_karst(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_karst(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
     elif preset_n == "alluvial":
-        z = _generate_alluvial(x, y, grid, rng=rng_main, relief=relief, progress=progress, progress_prefix=progress_prefix)
+        z = _generate_alluvial(
+            x,
+            y,
+            grid,
+            rng=rng_main,
+            relief=relief,
+            fbm_workers=int(fbm_workers),
+            progress=progress,
+            progress_prefix=progress_prefix,
+        )
 
     # ==========================================================================
     # TEST PATTERNLERİ (ESKİ)
