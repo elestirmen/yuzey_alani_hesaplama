@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import Any
 
 import pandas as pd
+import rasterio
 
 from surface_area import __version__
 from surface_area.io import (
@@ -25,9 +26,17 @@ from surface_area.io import (
 )
 from surface_area.methods import AreaResult, SlopeMethod, compute_methods_on_raster_with_timings
 from surface_area.multiscale import compute_multiscale_on_raster
-from surface_area.plotting import plot_a3d_vs_gsd, plot_micro_ratio_vs_gsd, plot_ratio_vs_gsd
+from surface_area.plotting import (
+    plot_a3d_vs_gsd,
+    plot_continuous_gt_rel_err_vs_gsd,
+    plot_error_vs_runtime,
+    plot_micro_ratio_vs_gsd,
+    plot_native_grid_ref_rel_err_vs_gsd,
+    plot_ratio_vs_gsd,
+    plot_runtime_vs_gsd,
+)
 from surface_area.progress import ProgressPrinter
-from surface_area.synthetic import SYNTHETIC_PRESETS, generate_synthetic_dsm
+from surface_area.synthetic import SYNTHETIC_PRESETS, compute_reference_surface_area, generate_synthetic_dsm
 
 
 GSD_NATIVE_TOKEN = "native"
@@ -121,6 +130,15 @@ def _grid_resolution_key(dx: float, dy: float) -> tuple[str, str]:
     return (f"{float(dx):.12g}", f"{float(dy):.12g}")
 
 
+def _read_native_grid_reference_from_raster(path: str | Path, *, nodata_override: float | None) -> Any:
+    with rasterio.open(path) as ds:
+        z = ds.read(1)
+        nodata_value = nodata_override if nodata_override is not None else ds.nodata
+        dx = float(ds.transform.a)
+        dy = float(abs(ds.transform.e))
+    return compute_reference_surface_area(z, dx=dx, dy=dy, nodata_value=nodata_value)
+
+
 def _load_synthetic_reference_payload(dem_path: Path) -> dict[str, Any] | None:
     sidecar_path = dem_path.with_suffix(".reference.json")
     if not sidecar_path.exists():
@@ -143,6 +161,7 @@ def _synthetic_reference_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "sidecar_path": payload.get("_sidecar_path"),
         "terrain_family": payload.get("terrain_family"),
         "has_continuous_ground_truth": isinstance(continuous, dict),
+        "continuous_gt_is_gsd_independent": isinstance(continuous, dict),
         "continuous_gt_surface_area_m2": None if not isinstance(continuous, dict) else continuous.get("surface_area_m2"),
         "continuous_gt_planar_area_m2": None if not isinstance(continuous, dict) else continuous.get("planar_area_m2"),
         "native_reference_surface_area_m2": None if not isinstance(native, dict) else native.get("surface_area_m2"),
@@ -210,9 +229,31 @@ def _append_synthetic_reference_columns(df_long: pd.DataFrame, payload: dict[str
             synthetic_native_a3d.append(float(native_ref.get("surface_area_m2", float("nan"))))
             synthetic_native_ratio.append(float(native_ref.get("surface_ratio", float("nan"))))
 
-        df_long["synthetic_native_ref_A2D"] = synthetic_native_a2d
-        df_long["synthetic_native_ref_A3D"] = synthetic_native_a3d
-        df_long["synthetic_native_ref_ratio"] = synthetic_native_ratio
+        synthetic_native_a2d_s = pd.Series(synthetic_native_a2d, index=df_long.index, dtype="float64")
+        synthetic_native_a3d_s = pd.Series(synthetic_native_a3d, index=df_long.index, dtype="float64")
+        synthetic_native_ratio_s = pd.Series(synthetic_native_ratio, index=df_long.index, dtype="float64")
+
+        if "synthetic_native_ref_A2D" in df_long.columns:
+            df_long["synthetic_native_ref_A2D"] = df_long["synthetic_native_ref_A2D"].combine_first(
+                synthetic_native_a2d_s
+            )
+        else:
+            df_long["synthetic_native_ref_A2D"] = synthetic_native_a2d_s
+
+        if "synthetic_native_ref_A3D" in df_long.columns:
+            df_long["synthetic_native_ref_A3D"] = df_long["synthetic_native_ref_A3D"].combine_first(
+                synthetic_native_a3d_s
+            )
+        else:
+            df_long["synthetic_native_ref_A3D"] = synthetic_native_a3d_s
+
+        if "synthetic_native_ref_ratio" in df_long.columns:
+            df_long["synthetic_native_ref_ratio"] = df_long["synthetic_native_ref_ratio"].combine_first(
+                synthetic_native_ratio_s
+            )
+        else:
+            df_long["synthetic_native_ref_ratio"] = synthetic_native_ratio_s
+
         df_long["A3D_synthetic_native_ref_diff"] = df_long["A3D"] - df_long["synthetic_native_ref_A3D"]
         valid_den = df_long["synthetic_native_ref_A3D"].replace({0.0: float("nan")})
         df_long["A3D_synthetic_native_ref_rel_err"] = df_long["A3D_synthetic_native_ref_diff"] / valid_den
@@ -288,6 +329,7 @@ class _RunJob:
     tmp_dir: str
     resampled_dir: str
     keep_resampled: bool
+    compute_current_grid_reference: bool
     gsd_m: float
     gsd_label: str
     use_native_grid: bool
@@ -369,6 +411,10 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
     rows: list[dict] = []
     roi_rows: list[dict] = []
     results: dict[str, AreaResult] = {}
+    current_grid_reference = None
+
+    if job.compute_current_grid_reference and not job.roi_only:
+        current_grid_reference = _read_native_grid_reference_from_raster(dst_path, nodata_override=job.nodata)
 
     if not job.roi_only:
         method_summary = ", ".join(job.compute_methods)
@@ -448,6 +494,14 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
                 "resample_runtime_sec": float(t_resample),
                 "note": ";".join(note_parts),
             }
+            if current_grid_reference is not None:
+                row.update(
+                    {
+                        "synthetic_native_ref_A2D": float(current_grid_reference.planar_area_m2),
+                        "synthetic_native_ref_A3D": float(current_grid_reference.surface_area_m2),
+                        "synthetic_native_ref_ratio": float(current_grid_reference.surface_ratio),
+                    }
+                )
             if method == "adaptive_bilinear_patch_integral":
                 row.update(
                     {
@@ -919,6 +973,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             tmp_dir=str(tmp_dir),
             resampled_dir=str(resampled_dir),
             keep_resampled=bool(args.keep_resampled),
+            compute_current_grid_reference=bool(
+                isinstance(synthetic_reference_payload, dict)
+                and isinstance(synthetic_reference_payload.get("continuous_ground_truth"), dict)
+            ),
             gsd_m=target.gsd_m,
             gsd_label=target.label,
             use_native_grid=target.use_native_grid,
@@ -991,6 +1049,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             progress.log("Plotting...")
             plot_a3d_vs_gsd(df_long, outdir)
             plot_ratio_vs_gsd(df_long, outdir)
+            plot_continuous_gt_rel_err_vs_gsd(df_long, outdir)
+            plot_native_grid_ref_rel_err_vs_gsd(df_long, outdir)
+            plot_runtime_vs_gsd(df_long, outdir)
+            plot_error_vs_runtime(df_long, outdir)
             plot_micro_ratio_vs_gsd(df_long, outdir)
 
         if args.plots:
