@@ -244,16 +244,34 @@ def test_main_run_includes_synthetic_ground_truth_columns_when_reference_sidecar
     rc = main.main()
     assert rc == 0
 
-    df = _read_results_sheet(outdir / "results.xlsx", "results_long").sort_values("gsd_m").reset_index(drop=True)
+    df = _read_results_sheet(outdir / "results.xlsx", "results_long").sort_values(["gsd_m", "method"]).reset_index(
+        drop=True
+    )
     assert "continuous_gt_A3D" in df.columns
     assert "A3D_continuous_gt_rel_err" in df.columns
     assert "synthetic_native_ref_A3D" in df.columns
     assert "A3D_synthetic_native_ref_rel_err" in df.columns
-    assert df["synthetic_native_ref_A3D"].notna().all()
+    assert {"continuous_ground_truth", "native_grid_reference"}.issubset(set(df["method"]))
+
+    computed_rows = df[~df["method"].isin(["continuous_ground_truth", "native_grid_reference"])].reset_index(drop=True)
+    assert computed_rows["synthetic_native_ref_A3D"].notna().all()
+
+    xls = pd.ExcelFile(outdir / "results.xlsx")
+    assert "reference_summary" in set(xls.sheet_names)
+    df_ref = _read_results_sheet(outdir / "results.xlsx", "reference_summary")
+    assert set(df_ref["reference_kind"]) == {"continuous_ground_truth", "native_grid_reference"}
+    assert len(df_ref[df_ref["reference_kind"] == "continuous_ground_truth"]) == 1
+    native_refs = df_ref[df_ref["reference_kind"] == "native_grid_reference"].sort_values("gsd_m").reset_index(drop=True)
+    assert np.allclose(native_refs["gsd_m"].to_numpy(), [1.0, 2.0], rtol=0.0, atol=1e-12)
+    assert native_refs["reference_A3D"].notna().all()
 
     sidecar = json.loads(dem_path.with_suffix(".reference.json").read_text(encoding="utf-8"))
     gt_a3d = float(sidecar["continuous_ground_truth"]["surface_area_m2"])
-    assert np.allclose(df["continuous_gt_A3D"].to_numpy(), gt_a3d, rtol=0.0, atol=1e-9)
+    assert np.allclose(computed_rows["continuous_gt_A3D"].to_numpy(), gt_a3d, rtol=0.0, atol=1e-9)
+    continuous_rows = df[df["method"] == "continuous_ground_truth"].sort_values("gsd_m").reset_index(drop=True)
+    assert np.allclose(continuous_rows["A3D"].to_numpy(), [gt_a3d, gt_a3d], rtol=0.0, atol=1e-9)
+    continuous_summary = df_ref[df_ref["reference_kind"] == "continuous_ground_truth"].iloc[0]
+    assert np.isclose(float(continuous_summary["reference_A3D"]), gt_a3d, rtol=0.0, atol=1e-9)
 
     run_info = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
     assert run_info["synthetic_reference"]["has_continuous_ground_truth"] is True

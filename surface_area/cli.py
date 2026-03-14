@@ -713,6 +713,162 @@ def _run_info_sheet(payload: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame.from_records(rows, columns=["key", "value"])
 
 
+def _results_long_sheet(df_long: pd.DataFrame) -> pd.DataFrame:
+    if df_long.empty or "method" not in df_long.columns:
+        return df_long
+
+    native_columns = {"synthetic_native_ref_A2D", "synthetic_native_ref_A3D", "synthetic_native_ref_ratio"}
+    continuous_columns = {"continuous_gt_A2D", "continuous_gt_A3D", "continuous_gt_ratio"}
+    has_native = native_columns.issubset(df_long.columns)
+    has_continuous = continuous_columns.issubset(df_long.columns)
+    if not has_native and not has_continuous:
+        return df_long
+
+    export_rows: list[dict[str, Any]] = []
+    group_columns = ["gsd_m"]
+    if "dx" in df_long.columns:
+        group_columns.append("dx")
+    if "dy" in df_long.columns:
+        group_columns.append("dy")
+
+    for _, group in df_long.groupby(group_columns, sort=False, dropna=False):
+        group = group.reset_index(drop=True)
+        export_rows.extend(group.to_dict(orient="records"))
+        anchor = group.iloc[0]
+
+        def _blank_row() -> dict[str, Any]:
+            return {column: pd.NA for column in df_long.columns}
+
+        if has_native and pd.notna(anchor.get("synthetic_native_ref_A3D")):
+            row = _blank_row()
+            row["method"] = "native_grid_reference"
+            row["A2D"] = anchor.get("synthetic_native_ref_A2D")
+            row["A3D"] = anchor.get("synthetic_native_ref_A3D")
+            row["ratio"] = anchor.get("synthetic_native_ref_ratio")
+            row["note"] = "reference_row=native_grid_reference"
+            for column in group_columns:
+                row[column] = anchor.get(column)
+            if "synthetic_native_ref_A2D" in row:
+                row["synthetic_native_ref_A2D"] = anchor.get("synthetic_native_ref_A2D")
+            if "synthetic_native_ref_A3D" in row:
+                row["synthetic_native_ref_A3D"] = anchor.get("synthetic_native_ref_A3D")
+            if "synthetic_native_ref_ratio" in row:
+                row["synthetic_native_ref_ratio"] = anchor.get("synthetic_native_ref_ratio")
+            if "A3D_synthetic_native_ref_diff" in row:
+                row["A3D_synthetic_native_ref_diff"] = 0.0
+            if "A3D_synthetic_native_ref_rel_err" in row:
+                row["A3D_synthetic_native_ref_rel_err"] = 0.0
+            export_rows.append(row)
+
+        if has_continuous and pd.notna(anchor.get("continuous_gt_A3D")):
+            row = _blank_row()
+            row["method"] = "continuous_ground_truth"
+            row["A2D"] = anchor.get("continuous_gt_A2D")
+            row["A3D"] = anchor.get("continuous_gt_A3D")
+            row["ratio"] = anchor.get("continuous_gt_ratio")
+            row["note"] = "reference_row=continuous_ground_truth"
+            for column in group_columns:
+                row[column] = anchor.get(column)
+            if "continuous_gt_A2D" in row:
+                row["continuous_gt_A2D"] = anchor.get("continuous_gt_A2D")
+            if "continuous_gt_A3D" in row:
+                row["continuous_gt_A3D"] = anchor.get("continuous_gt_A3D")
+            if "continuous_gt_ratio" in row:
+                row["continuous_gt_ratio"] = anchor.get("continuous_gt_ratio")
+            if "A3D_continuous_gt_diff" in row:
+                row["A3D_continuous_gt_diff"] = 0.0
+            if "A3D_continuous_gt_rel_err" in row:
+                row["A3D_continuous_gt_rel_err"] = 0.0
+            export_rows.append(row)
+
+    return pd.DataFrame.from_records(export_rows, columns=df_long.columns)
+
+
+def _reference_summary_sheet(df_long: pd.DataFrame | None) -> pd.DataFrame | None:
+    if df_long is None or df_long.empty:
+        return None
+
+    rows: list[dict[str, Any]] = []
+
+    continuous_columns = {"continuous_gt_A2D", "continuous_gt_A3D", "continuous_gt_ratio"}
+    if continuous_columns.issubset(df_long.columns):
+        continuous = df_long.dropna(subset=["continuous_gt_A3D"])[
+            ["continuous_gt_A2D", "continuous_gt_A3D", "continuous_gt_ratio"]
+        ]
+        if not continuous.empty:
+            first = continuous.iloc[0]
+            rows.append(
+                {
+                    "reference_kind": "continuous_ground_truth",
+                    "gsd_m": pd.NA,
+                    "dx": pd.NA,
+                    "dy": pd.NA,
+                    "reference_A2D": float(first["continuous_gt_A2D"]),
+                    "reference_A3D": float(first["continuous_gt_A3D"]),
+                    "reference_ratio": float(first["continuous_gt_ratio"]),
+                    "note": "Analytic surface reference; same for all GSD values.",
+                }
+            )
+
+    native_columns = {"synthetic_native_ref_A2D", "synthetic_native_ref_A3D", "synthetic_native_ref_ratio"}
+    if native_columns.issubset(df_long.columns):
+        native = df_long.dropna(subset=["synthetic_native_ref_A3D"])[
+            [
+                "gsd_m",
+                "dx",
+                "dy",
+                "synthetic_native_ref_A2D",
+                "synthetic_native_ref_A3D",
+                "synthetic_native_ref_ratio",
+            ]
+        ]
+        if not native.empty:
+            native_unique = (
+                native.drop_duplicates(
+                    subset=[
+                        "gsd_m",
+                        "dx",
+                        "dy",
+                        "synthetic_native_ref_A2D",
+                        "synthetic_native_ref_A3D",
+                        "synthetic_native_ref_ratio",
+                    ]
+                )
+                .sort_values(["gsd_m", "dx", "dy"])
+                .reset_index(drop=True)
+            )
+            for row in native_unique.itertuples(index=False):
+                rows.append(
+                    {
+                        "reference_kind": "native_grid_reference",
+                        "gsd_m": float(row.gsd_m),
+                        "dx": float(row.dx),
+                        "dy": float(row.dy),
+                        "reference_A2D": float(row.synthetic_native_ref_A2D),
+                        "reference_A3D": float(row.synthetic_native_ref_A3D),
+                        "reference_ratio": float(row.synthetic_native_ref_ratio),
+                        "note": "Raster-grid reference evaluated on this GSD/grid.",
+                    }
+                )
+
+    if not rows:
+        return None
+
+    return pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "reference_kind",
+            "gsd_m",
+            "dx",
+            "dy",
+            "reference_A2D",
+            "reference_A3D",
+            "reference_ratio",
+            "note",
+        ],
+    )
+
+
 def _write_results_workbook(
     outdir: Path,
     *,
@@ -725,8 +881,11 @@ def _write_results_workbook(
 
     with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
         if df_long is not None:
-            df_long.to_excel(writer, sheet_name="results_long", index=False)
+            _results_long_sheet(df_long).to_excel(writer, sheet_name="results_long", index=False)
             _results_wide(df_long).to_excel(writer, sheet_name="results_wide", index=False)
+            reference_summary = _reference_summary_sheet(df_long)
+            if reference_summary is not None and not reference_summary.empty:
+                reference_summary.to_excel(writer, sheet_name="reference_summary", index=False)
         if df_roi is not None and not df_roi.empty:
             df_roi.to_excel(writer, sheet_name="results_roi_long", index=False)
         _run_info_sheet(run_info).to_excel(writer, sheet_name="run_info", index=False)
