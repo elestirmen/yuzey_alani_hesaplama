@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from openpyxl import load_workbook
 import pandas as pd
 import rasterio
 from rasterio.crs import CRS
@@ -308,7 +309,7 @@ def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -
     assert workbook_path.exists()
 
     xls = pd.ExcelFile(workbook_path)
-    assert set(xls.sheet_names) == {"results_long", "results_wide", "run_info"}
+    assert set(xls.sheet_names) == {"results_long", "results_wide", "run_info", "grafikler"}
 
     df_wide = _read_results_sheet(workbook_path, "results_wide").sort_values("gsd_m").reset_index(drop=True)
     assert list(df_wide.columns) == ["gsd_m", "gradient_multiplier_A3D", "tin_2tri_cell_A3D"]
@@ -335,6 +336,13 @@ def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -
         rtol=0.0,
         atol=1e-9,
     )
+
+    workbook = load_workbook(workbook_path)
+    charts_ws = workbook["grafikler"]
+    assert charts_ws["A1"].value == "Bu sayfadaki grafikler Excel icinde duzenlenebilir; kaynak tablolar asagidadir."
+    assert charts_ws["A68"].value == "A3D vs GSD - kaynak veri"
+    assert charts_ws.max_row >= 70
+    assert len(charts_ws._charts) >= 3
 
 
 def test_cli_multiscale_only_results_long_column_order_is_stable(tmp_path: Path) -> None:

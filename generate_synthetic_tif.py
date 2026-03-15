@@ -126,8 +126,8 @@ config: dict[str, object] = {
     # yerine geçen tek giriş noktasıdır.
     "target": "all",
     # Raster boyutu
-    "rows": 8192,
-    "cols": 8192,
+    "rows": 16384,
+    "cols": 16384,
     # Piksel boyutu (metre)
     "dx": 0.05,
     "dy": None,

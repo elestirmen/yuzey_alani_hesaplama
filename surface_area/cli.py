@@ -4,12 +4,17 @@ import argparse
 from dataclasses import dataclass
 import json
 import math
+from numbers import Real
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from openpyxl.chart import Reference, ScatterChart, Series
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 import pandas as pd
 import rasterio
 
@@ -118,6 +123,26 @@ class _ResolvedGsdTarget:
     gsd_m: float
     use_native_grid: bool
     label: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExcelChartSpec:
+    title: str
+    x_title: str
+    y_title: str
+    anchor: str
+    frame: pd.DataFrame
+    chart_type: str
+    log_x: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ExcelTableRef:
+    min_col: int
+    max_col: int
+    header_row: int
+    data_start_row: int
+    data_end_row: int
 
 
 def _format_gsd_value(value: str | float) -> str:
@@ -869,6 +894,421 @@ def _reference_summary_sheet(df_long: pd.DataFrame | None) -> pd.DataFrame | Non
     )
 
 
+def _excel_reference_curve(df_long: pd.DataFrame, value_column: str) -> pd.DataFrame:
+    if value_column not in df_long.columns:
+        return pd.DataFrame(columns=["gsd_m", value_column])
+
+    reference = (
+        df_long.dropna(subset=["gsd_m", value_column])[["gsd_m", value_column]]
+        .drop_duplicates(subset=["gsd_m", value_column])
+        .sort_values("gsd_m")
+        .reset_index(drop=True)
+    )
+    if reference.empty:
+        return reference
+
+    return reference.groupby("gsd_m", as_index=False, sort=True).first()
+
+
+def _excel_method_metric_table(df_long: pd.DataFrame, value_column: str) -> pd.DataFrame:
+    if value_column not in df_long.columns or "method" not in df_long.columns:
+        return pd.DataFrame()
+
+    metric = df_long.dropna(subset=["gsd_m", value_column, "method"]).copy()
+    if metric.empty:
+        return pd.DataFrame()
+
+    wide = metric.pivot_table(index="gsd_m", columns="method", values=value_column, aggfunc="first")
+    if wide.empty:
+        return pd.DataFrame()
+
+    wide = wide.sort_index()
+    wide.columns = [str(column) for column in wide.columns.to_list()]
+    return wide.reset_index()
+
+
+def _excel_gsd_chart_table(
+    df_long: pd.DataFrame,
+    value_column: str,
+    *,
+    extra_series: list[tuple[str, str]] | None = None,
+) -> pd.DataFrame:
+    table = _excel_method_metric_table(df_long, value_column)
+    if table.empty:
+        return pd.DataFrame()
+
+    for source_column, label in extra_series or []:
+        reference = _excel_reference_curve(df_long, source_column)
+        if reference.empty:
+            continue
+        table = table.merge(reference.rename(columns={source_column: label}), on="gsd_m", how="outer")
+
+    return table.sort_values("gsd_m").reset_index(drop=True)
+
+
+def _excel_runtime_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
+    if "runtime_sec" not in df_long.columns:
+        return pd.DataFrame()
+
+    runtime = df_long.dropna(subset=["gsd_m", "runtime_sec", "method"]).copy()
+    if runtime.empty:
+        return pd.DataFrame()
+
+    runtime["runtime_total_sec"] = (
+        runtime["runtime_sec"].astype(float) + runtime["resample_runtime_sec"].fillna(0.0).astype(float)
+    )
+    return _excel_method_metric_table(runtime, "runtime_total_sec")
+
+
+def _excel_error_metric_metadata(df_long: pd.DataFrame) -> tuple[str, str] | None:
+    if "A3D_continuous_gt_rel_err" in df_long.columns and df_long["A3D_continuous_gt_rel_err"].notna().any():
+        return ("A3D_continuous_gt_rel_err", "|Relative error vs continuous GT| (-)")
+    if (
+        "A3D_synthetic_native_ref_rel_err" in df_long.columns
+        and df_long["A3D_synthetic_native_ref_rel_err"].notna().any()
+    ):
+        return ("A3D_synthetic_native_ref_rel_err", "|Relative error vs native-grid ref| (-)")
+    return None
+
+
+def _excel_error_vs_runtime_table(df_long: pd.DataFrame) -> tuple[pd.DataFrame, str] | None:
+    metadata = _excel_error_metric_metadata(df_long)
+    if metadata is None:
+        return None
+
+    error_column, y_title = metadata
+    scatter = df_long.dropna(subset=["runtime_sec", error_column, "method"]).copy()
+    if scatter.empty:
+        return None
+
+    scatter["runtime_total_sec"] = (
+        scatter["runtime_sec"].astype(float) + scatter["resample_runtime_sec"].fillna(0.0).astype(float)
+    )
+    scatter["abs_rel_err"] = scatter[error_column].abs().astype(float)
+
+    grouped = [(str(method), group.sort_values("runtime_total_sec")) for method, group in scatter.groupby("method", sort=True)]
+    max_len = max(len(group) for _, group in grouped)
+    columns: dict[str, list[float | None]] = {}
+    for method, group in grouped:
+        xs = group["runtime_total_sec"].astype(float).tolist()
+        ys = group["abs_rel_err"].astype(float).tolist()
+        padding = [None] * (max_len - len(xs))
+        columns[f"{method}_runtime_sec"] = xs + padding
+        columns[f"{method}_abs_rel_err"] = ys + padding
+
+    return pd.DataFrame(columns), y_title
+
+
+def _excel_micro_ratio_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
+    if "micro_ratio" not in df_long.columns:
+        return pd.DataFrame()
+
+    micro = df_long.dropna(subset=["gsd_m", "micro_ratio"]).copy()
+    if micro.empty:
+        return pd.DataFrame()
+
+    if "sigma_m" in micro.columns and micro["sigma_m"].notna().any():
+        micro["series_label"] = micro["sigma_m"].map(lambda value: f"sigma={float(value):g} m")
+    else:
+        micro["series_label"] = micro["method"].astype(str)
+
+    wide = micro.pivot_table(index="gsd_m", columns="series_label", values="micro_ratio", aggfunc="first")
+    if wide.empty:
+        return pd.DataFrame()
+
+    wide = wide.sort_index()
+    wide.columns = [str(column) for column in wide.columns.to_list()]
+    return wide.reset_index()
+
+
+def _excel_chart_specs(df_long: pd.DataFrame) -> list[_ExcelChartSpec]:
+    anchors = ["A3", "J3", "A19", "J19", "A35", "J35", "A51", "J51"]
+    specs: list[_ExcelChartSpec] = []
+
+    def _append(
+        *,
+        title: str,
+        x_title: str,
+        y_title: str,
+        frame: pd.DataFrame,
+        chart_type: str,
+        log_x: bool = False,
+    ) -> None:
+        if frame.empty:
+            return
+        specs.append(
+            _ExcelChartSpec(
+                title=title,
+                x_title=x_title,
+                y_title=y_title,
+                anchor=anchors[len(specs)],
+                frame=frame,
+                chart_type=chart_type,
+                log_x=log_x,
+            )
+        )
+
+    _append(
+        title="A3D vs GSD",
+        x_title="GSD (m)",
+        y_title="A3D (m^2)",
+        frame=_excel_gsd_chart_table(
+            df_long,
+            "A3D",
+            extra_series=[
+                ("synthetic_native_ref_A3D", "Native-grid reference (per GSD)"),
+                ("continuous_gt_A3D", "Continuous ground truth (GSD-independent)"),
+            ],
+        ),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    _append(
+        title="A3D/A2D Ratio vs GSD",
+        x_title="GSD (m)",
+        y_title="A3D / A2D (-)",
+        frame=_excel_gsd_chart_table(
+            df_long,
+            "ratio",
+            extra_series=[
+                ("synthetic_native_ref_ratio", "Native-grid reference (per GSD)"),
+                ("continuous_gt_ratio", "Continuous ground truth (GSD-independent)"),
+            ],
+        ),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    _append(
+        title="Relative Error vs GSD (Continuous Ground Truth)",
+        x_title="GSD (m)",
+        y_title="Relative error (-)",
+        frame=_excel_gsd_chart_table(df_long, "A3D_continuous_gt_rel_err"),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    _append(
+        title="Relative Error vs GSD (Native-grid Reference)",
+        x_title="GSD (m)",
+        y_title="Relative error (-)",
+        frame=_excel_gsd_chart_table(df_long, "A3D_synthetic_native_ref_rel_err"),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    _append(
+        title="Runtime vs GSD",
+        x_title="GSD (m)",
+        y_title="Runtime (s)",
+        frame=_excel_runtime_chart_table(df_long),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    error_vs_runtime = _excel_error_vs_runtime_table(df_long)
+    if error_vs_runtime is not None:
+        error_vs_runtime_frame, error_vs_runtime_y_title = error_vs_runtime
+        _append(
+            title="Error vs Runtime",
+            x_title="Runtime (s)",
+            y_title=error_vs_runtime_y_title,
+            frame=error_vs_runtime_frame,
+            chart_type="xy_pairs",
+        )
+    _append(
+        title="A_micro / A_total vs GSD (multiscale)",
+        x_title="GSD (m)",
+        y_title="A_micro / A_total (-)",
+        frame=_excel_micro_ratio_chart_table(df_long),
+        chart_type="shared_x",
+        log_x=True,
+    )
+
+    return specs
+
+
+def _excel_cell_value(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
+def _write_excel_table(
+    ws: Worksheet,
+    *,
+    start_row: int,
+    start_col: int,
+    title: str,
+    frame: pd.DataFrame,
+) -> _ExcelTableRef:
+    ws.cell(row=start_row, column=start_col, value=title).font = Font(bold=True)
+    header_row = start_row + 1
+
+    for column_offset, column_name in enumerate(frame.columns):
+        cell = ws.cell(row=header_row, column=start_col + column_offset, value=str(column_name))
+        cell.font = Font(bold=True)
+
+    for row_offset, row in enumerate(frame.itertuples(index=False, name=None), start=1):
+        for column_offset, value in enumerate(row):
+            excel_value = _excel_cell_value(value)
+            cell = ws.cell(row=header_row + row_offset, column=start_col + column_offset, value=excel_value)
+            if isinstance(excel_value, Real) and not isinstance(excel_value, bool):
+                cell.number_format = "0.###############"
+
+    for column_offset, column_name in enumerate(frame.columns):
+        ws.column_dimensions[get_column_letter(start_col + column_offset)].width = max(16, len(str(column_name)) + 2)
+
+    data_start_row = header_row + 1
+    data_end_row = header_row + len(frame.index)
+    return _ExcelTableRef(
+        min_col=start_col,
+        max_col=start_col + len(frame.columns) - 1,
+        header_row=header_row,
+        data_start_row=data_start_row,
+        data_end_row=data_end_row,
+    )
+
+
+def _base_excel_scatter_chart(
+    *,
+    title: str,
+    x_title: str,
+    y_title: str,
+    log_x: bool,
+) -> ScatterChart:
+    chart = ScatterChart()
+    chart.title = title
+    chart.style = 2
+    chart.scatterStyle = "lineMarker"
+    chart.x_axis.title = x_title
+    chart.y_axis.title = y_title
+    chart.legend.position = "r"
+    chart.width = 16
+    chart.height = 9
+    if log_x:
+        chart.x_axis.scaling.logBase = 10
+    return chart
+
+
+def _add_excel_shared_x_chart(
+    ws: Worksheet,
+    table_ref: _ExcelTableRef,
+    *,
+    title: str,
+    x_title: str,
+    y_title: str,
+    anchor: str,
+    log_x: bool,
+) -> None:
+    if table_ref.max_col <= table_ref.min_col:
+        return
+
+    chart = _base_excel_scatter_chart(title=title, x_title=x_title, y_title=y_title, log_x=log_x)
+    xvalues = Reference(
+        ws,
+        min_col=table_ref.min_col,
+        min_row=table_ref.data_start_row,
+        max_row=table_ref.data_end_row,
+    )
+
+    for column in range(table_ref.min_col + 1, table_ref.max_col + 1):
+        values = Reference(
+            ws,
+            min_col=column,
+            min_row=table_ref.header_row,
+            max_row=table_ref.data_end_row,
+        )
+        series = Series(values, xvalues, title_from_data=True)
+        series.marker.symbol = "circle"
+        chart.series.append(series)
+
+    ws.add_chart(chart, anchor)
+
+
+def _add_excel_xy_pairs_chart(
+    ws: Worksheet,
+    table_ref: _ExcelTableRef,
+    *,
+    title: str,
+    x_title: str,
+    y_title: str,
+    anchor: str,
+    log_x: bool,
+) -> None:
+    if table_ref.max_col <= table_ref.min_col:
+        return
+
+    chart = _base_excel_scatter_chart(title=title, x_title=x_title, y_title=y_title, log_x=log_x)
+    for column in range(table_ref.min_col, table_ref.max_col + 1, 2):
+        if column + 1 > table_ref.max_col:
+            break
+        xvalues = Reference(
+            ws,
+            min_col=column,
+            min_row=table_ref.data_start_row,
+            max_row=table_ref.data_end_row,
+        )
+        values = Reference(
+            ws,
+            min_col=column + 1,
+            min_row=table_ref.header_row,
+            max_row=table_ref.data_end_row,
+        )
+        series = Series(values, xvalues, title_from_data=True)
+        series.marker.symbol = "circle"
+        chart.series.append(series)
+
+    ws.add_chart(chart, anchor)
+
+
+def _write_excel_charts_sheet(workbook: Any, df_long: pd.DataFrame) -> None:
+    if "grafikler" in workbook.sheetnames:
+        del workbook["grafikler"]
+
+    ws = workbook.create_sheet(title="grafikler")
+    ws["A1"] = "Bu sayfadaki grafikler Excel icinde duzenlenebilir; kaynak tablolar asagidadir."
+    ws["A1"].font = Font(bold=True)
+    ws["A2"] = "Not: Sayisal hucreler daha hassas inceleme icin yuksek ondalik gorunumuyle yazildi."
+
+    chart_specs = _excel_chart_specs(df_long)
+    if not chart_specs:
+        ws["A4"] = "Grafik uretmek icin uygun veri bulunamadi."
+        return
+
+    table_row = 68
+    for spec in chart_specs:
+        table_ref = _write_excel_table(
+            ws,
+            start_row=table_row,
+            start_col=1,
+            title=f"{spec.title} - kaynak veri",
+            frame=spec.frame,
+        )
+        if spec.chart_type == "xy_pairs":
+            _add_excel_xy_pairs_chart(
+                ws,
+                table_ref,
+                title=spec.title,
+                x_title=spec.x_title,
+                y_title=spec.y_title,
+                anchor=spec.anchor,
+                log_x=spec.log_x,
+            )
+        else:
+            _add_excel_shared_x_chart(
+                ws,
+                table_ref,
+                title=spec.title,
+                x_title=spec.x_title,
+                y_title=spec.y_title,
+                anchor=spec.anchor,
+                log_x=spec.log_x,
+            )
+        table_row = table_ref.data_end_row + 3
+
+
 def _write_results_workbook(
     outdir: Path,
     *,
@@ -889,6 +1329,8 @@ def _write_results_workbook(
         if df_roi is not None and not df_roi.empty:
             df_roi.to_excel(writer, sheet_name="results_roi_long", index=False)
         _run_info_sheet(run_info).to_excel(writer, sheet_name="run_info", index=False)
+        if df_long is not None and not df_long.empty:
+            _write_excel_charts_sheet(writer.book, df_long)
 
     return workbook_path
 
