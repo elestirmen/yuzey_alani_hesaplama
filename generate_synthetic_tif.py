@@ -73,6 +73,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,10 +108,12 @@ from surface_area.terrain_complexity import compute_complexity_descriptors, summ
 
 TARGET_GROUP_CHOICES = ("raster_first", "analytic", "all")
 TARGET_CHOICES = tuple(SYNTHETIC_PRESETS) + TARGET_GROUP_CHOICES
+LATEST_GENERATED_DEM_LIST_NAME = "latest_generated.demlist"
 
 config: dict[str, object] = {
     # Çıktı GeoTIFF yolu.
     # Şablonlar: {preset}, {rows}, {cols}, {dx}, {dy}, {seed}, {timestamp}
+    # Her başarılı koşudan sonra aynı kök klasöre latest_generated.demlist yazılır.
     "out": "out_synth/synth_{preset}_{rows}x{cols}_dx{dx:g}_seed{seed}_{timestamp}.tif",
     # Tek seçim parametresi:
     # - Bir preset adı verirsen yalnızca o yüzey üretilir.
@@ -1246,6 +1249,25 @@ def _resolve_generation_out_path(
     )
 
 
+def _write_latest_generated_dem_list(generated_outputs: list[Path]) -> Path | None:
+    if not generated_outputs:
+        return None
+
+    try:
+        common_parent = Path(os.path.commonpath([str(path.resolve().parent) for path in generated_outputs]))
+    except ValueError:
+        common_parent = generated_outputs[0].resolve().parent
+    manifest_path = common_parent / LATEST_GENERATED_DEM_LIST_NAME
+    lines = [
+        "# SurfaceArea synthetic DEM list",
+        "# One GeoTIFF path per line; comments and blank lines are ignored.",
+        *[str(path.resolve()) for path in generated_outputs],
+        "",
+    ]
+    manifest_path.write_text("\n".join(lines), encoding="utf-8")
+    return manifest_path
+
+
 def _print_reference_section(title: str, ref_area: SurfaceAreaResult | ContinuousSurfaceReference) -> None:
     print()
     print("=" * 60)
@@ -1824,6 +1846,10 @@ def main(argv: list[str] | None = None, *, defaults: SynthConfig = DEFAULT_SYNTH
         print("=" * 60)
         for out in generated_outputs:
             print(f"  - {out}")
+
+    manifest_path = _write_latest_generated_dem_list(generated_outputs)
+    if manifest_path is not None and not quiet:
+        print(f"Son üretilen DEM listesi güncellendi: {manifest_path}")
 
     return 0
 

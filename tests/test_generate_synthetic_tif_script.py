@@ -60,6 +60,15 @@ def test_generate_synthetic_tif_script(tmp_path) -> None:
     assert "nodata_samples" in grid
     assert abs(float(ref["planar_area_m2"]) - float(grid["valid_cells"]) * float(params["dx"]) * float(params["dy"])) < 1e-9
 
+    manifest_path = tmp_path / generate_synthetic_tif.LATEST_GENERATED_DEM_LIST_NAME
+    assert manifest_path.exists()
+    manifest_lines = [
+        line.strip()
+        for line in manifest_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert manifest_lines == [str(out.resolve())]
+
 
 def test_generate_synthetic_tif_script_supports_analytic_ground_truth_and_multiresolution(tmp_path) -> None:
     import generate_synthetic_tif
@@ -135,3 +144,9 @@ def test_generate_synthetic_parser_supports_target_group_default() -> None:
 
     args = parser.parse_args(["--target", "mountain"])
     assert args.target == "mountain"
+
+
+def test_default_synth_config_uses_single_preset_target() -> None:
+    import generate_synthetic_tif
+
+    assert generate_synthetic_tif.DEFAULT_SYNTH_CONFIG.target == "mountain"

@@ -45,6 +45,45 @@ METHOD_PRESET_NOTES: dict[str, str] = {
 }
 
 TIF_SUFFIXES = {".tif", ".tiff"}
+DEM_LIST_SUFFIX = ".demlist"
+
+
+def _is_dem_list_path(path: Path) -> bool:
+    return path.suffix.lower() == DEM_LIST_SUFFIX
+
+
+def _is_batch_dem_source(path: Path) -> bool:
+    return path.is_dir() or (path.is_file() and _is_dem_list_path(path))
+
+
+def _read_dem_list_inputs(dem_list_path: Path) -> list[Path]:
+    dem_paths: list[Path] = []
+    seen: set[str] = set()
+    for line_number, raw_line in enumerate(dem_list_path.read_text(encoding="utf-8").splitlines(), start=1):
+        entry = raw_line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+
+        candidate = Path(entry)
+        if not candidate.is_absolute():
+            candidate = (dem_list_path.parent / candidate).resolve()
+
+        if not candidate.exists():
+            raise ValueError(f"DEM list entry not found at line {line_number}: {candidate}")
+        if not candidate.is_file():
+            raise ValueError(f"DEM list entry must be a file at line {line_number}: {candidate}")
+        if candidate.suffix.lower() not in TIF_SUFFIXES:
+            raise ValueError(f"DEM list entry must be a GeoTIFF at line {line_number}: {candidate}")
+
+        key = str(candidate.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dem_paths.append(candidate)
+
+    if not dem_paths:
+        raise ValueError(f"DEM list is empty or has no valid GeoTIFF entries: {dem_list_path}")
+    return dem_paths
 
 
 def _normalize_method_list(methods: list[str]) -> list[str]:
@@ -101,6 +140,10 @@ def _resolve_dem_inputs(dem_path: Path) -> list[Path]:
     if not dem_path.exists():
         raise ValueError(f"DEM not found: {dem_path}")
     if dem_path.is_file():
+        if _is_dem_list_path(dem_path):
+            return _read_dem_list_inputs(dem_path)
+        if dem_path.suffix.lower() not in TIF_SUFFIXES:
+            raise ValueError(f"DEM file must be a GeoTIFF or {DEM_LIST_SUFFIX}, got: {dem_path}")
         return [dem_path]
     if not dem_path.is_dir():
         raise ValueError(f"DEM must be a file or directory, got: {dem_path}")
@@ -149,15 +192,16 @@ config: dict[str, object] = {
     # 1) TEMEL DOSYALAR
     # ============================================================
     # Analiz edilecek DEM/DSM girdisi.
-    # Buraya tek bir GeoTIFF dosyasi ya da icinde .tif/.tiff dosyalari olan bir klasor yazabilirsin.
+    # Buraya tek bir GeoTIFF dosyasi, .demlist dosyasi ya da icinde .tif/.tiff dosyalari olan bir klasor yazabilirsin.
     # Ornek tek dosya: "vadi_dsm.tif"
+    # Ornek liste   : "out_synth/latest_generated.demlist"
     # Ornek klasor  : "dem_arsivi"
-    "dem": "out_synth",
+    "dem": "out_synth/latest_generated.demlist",
     # Sonuclarin yazilacagi klasor.
     # Tek dosya verirsen CSV dosyalari, grafikler ve gecici ciktilar dogrudan burada olusur.
     # Klasor verirsen her GeoTIFF icin bunun altinda ayri bir alt klasor acilir.
     # Ornek: "out_vadi"
-    "outdir": "out_vadi",
+    "outdir": "sonuclar_out_",
     # ============================================================
     # 2) HANGI COZUMLERDE CALISACAK?
     # ============================================================
@@ -286,11 +330,11 @@ class RunConfig:
     """Settings for running the CLI from main.py."""
 
     dem: str = field(
-        default="vadi_dsm.tif",
+        default="out_synth/latest_generated.demlist",
         metadata={
             "help": (
-                "Analiz edilecek DEM/DSM girdisi. Tek bir GeoTIFF dosyasi veya icinde .tif/.tiff bulunan "
-                "bir klasor verebilirsin."
+                f"Analiz edilecek DEM/DSM girdisi. Tek bir GeoTIFF, {DEM_LIST_SUFFIX} dosyasi "
+                "veya icinde .tif/.tiff bulunan bir klasor verebilirsin."
             )
         },
     )
@@ -304,7 +348,7 @@ class RunConfig:
         },
     )
     gsd: list[float | str] = field(
-        default_factory=lambda: ["native", 0.06, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+        default_factory=lambda: ["native", 0.1, 0.5, 1, 2, 5, 10, 20, 50],
         metadata={
             "help": (
                 "Hedef GSD listesi. 'native' yazarsan rasteri kendi cozumunde kullanir; "
@@ -449,7 +493,7 @@ class RunConfig:
         },
     )
     workers: int = field(
-        default=1,
+        default=8,
         metadata={
             "help": (
                 "Paralel worker process sayisi. Daha buyuk deger bazen hizlandirir ama her veri setinde ayni etkiyi vermez. "
@@ -553,8 +597,9 @@ class RunConfig:
 
     def to_argv(self) -> list[str]:
         self.validate()
-        if Path(self.dem).is_dir():
-            raise ValueError("to_argv() requires a single DEM file; dem points to a directory")
+        dem_path = Path(self.dem)
+        if _is_batch_dem_source(dem_path):
+            raise ValueError("to_argv() requires a single DEM GeoTIFF file; dem points to a batch source")
         return self._build_single_run_argv(dem=self.dem, outdir=self.outdir)
 
 
@@ -568,7 +613,9 @@ DEFAULT_RUN_CONFIG = RunConfig(**_config_run_kwargs(config))
 
 def _print_main_help() -> None:
     print("Usage:")
-    print("  python main.py run --dem <path-or-dir> --outdir <dir> [--gsd ...] [--methods ...] [--plots]")
+    print(
+        f"  python main.py run --dem <path-or-dir-or-{DEM_LIST_SUFFIX}> --outdir <dir> [--gsd ...] [--methods ...] [--plots]"
+    )
     print("  python main.py              # runs with the top-level config mapping")
     print("  python main.py --help")
     print("")
@@ -596,13 +643,14 @@ def _run_surface_area_batch(
     batch_jobs: list[tuple[Path, Path]],
     run_single,
 ) -> int:
-    if dem_root.is_dir():
-        print(f"DEM directory detected: {dem_root}")
+    if _is_batch_dem_source(dem_root):
+        source_label = "DEM directory" if dem_root.is_dir() else f"DEM list ({DEM_LIST_SUFFIX})"
+        print(f"{source_label} detected: {dem_root}")
         print(f"Found {len(batch_jobs)} GeoTIFF file(s). Outputs will be written under: {outdir_root}")
 
     total_jobs = len(batch_jobs)
     for index, (dem_path, outdir_path) in enumerate(batch_jobs, start=1):
-        if dem_root.is_dir():
+        if _is_batch_dem_source(dem_root):
             print()
             print("=" * 60)
             print(f"[{index}/{total_jobs}] DEM: {dem_path.name}")
@@ -618,11 +666,12 @@ def _run_surface_area_batch(
 def _run_main_config(run_config: RunConfig) -> int:
     run_config.validate()
     dem_root = Path(run_config.dem)
-    if dem_root.is_file():
+    dem_paths = run_config.resolved_dem_paths()
+    if len(dem_paths) == 1 and not _is_batch_dem_source(dem_root):
         return int(surface_area_cli.main(run_config.to_argv()))
 
     outdir_root = Path(run_config.outdir)
-    batch_jobs = _resolve_batch_outdirs(run_config.resolved_dem_paths(), outdir_root)
+    batch_jobs = _resolve_batch_outdirs(dem_paths, outdir_root)
     return _run_surface_area_batch(
         dem_root=dem_root,
         outdir_root=outdir_root,
@@ -649,7 +698,7 @@ def _dispatch_cli_args(argv: list[str]) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
 
-    if dem_root.is_file():
+    if not _is_batch_dem_source(dem_root):
         return int(surface_area_cli.cmd_run(args))
 
     batch_jobs = _resolve_batch_outdirs(dem_paths, outdir_root)
