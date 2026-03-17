@@ -16,6 +16,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
+import numpy as np
 import pandas as pd
 import rasterio
 
@@ -947,6 +948,210 @@ def _reference_summary_sheet(df_long: pd.DataFrame | None) -> pd.DataFrame | Non
             "note",
         ],
     )
+
+
+def _append_comparison_reference_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        out = df.copy()
+        out["comparison_reference_kind"] = pd.Series(dtype="object")
+        out["comparison_rel_err"] = pd.Series(dtype=np.float64)
+        out["comparison_abs_rel_err"] = pd.Series(dtype=np.float64)
+        out["is_reference_row"] = pd.Series(dtype=bool)
+        return out
+
+    out = df.copy()
+    ref_kind = pd.Series("none", index=out.index, dtype="object")
+    rel_err = pd.Series(np.nan, index=out.index, dtype=np.float64)
+    candidates = [
+        ("A3D_continuous_gt_rel_err", "continuous_ground_truth"),
+        ("A3D_rel_err", "external_reference_csv"),
+        ("A3D_synthetic_native_ref_rel_err", "native_grid_reference"),
+    ]
+    for column_name, kind_name in candidates:
+        if column_name not in out.columns:
+            continue
+        values = pd.to_numeric(out[column_name], errors="coerce")
+        mask = rel_err.isna() & values.notna()
+        if mask.any():
+            rel_err.loc[mask] = values.loc[mask]
+            ref_kind.loc[mask] = kind_name
+
+    method_series = out["method"] if "method" in out.columns else pd.Series("", index=out.index, dtype="object")
+    note_series = out["note"].astype(str) if "note" in out.columns else pd.Series("", index=out.index, dtype="object")
+    out["is_reference_row"] = method_series.isin({"native_grid_reference", "continuous_ground_truth"}) | note_series.str.contains(
+        "reference_row=", regex=False
+    )
+    out["comparison_reference_kind"] = ref_kind
+    out["comparison_rel_err"] = rel_err
+    out["comparison_abs_rel_err"] = np.abs(rel_err)
+    return out
+
+
+def _p90(series: pd.Series) -> float:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return float("nan")
+    return float(values.quantile(0.9))
+
+
+def _batch_summary_sheet(df_batch: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "method",
+        "gsd_m",
+        "area_count",
+        "error_area_count",
+        "reference_kinds",
+        "mean_abs_rel_err",
+        "median_abs_rel_err",
+        "std_abs_rel_err",
+        "p90_abs_rel_err",
+        "max_abs_rel_err",
+        "mean_runtime_sec",
+        "median_runtime_sec",
+    ]
+    if df_batch.empty:
+        return pd.DataFrame(columns=columns)
+
+    analysis = df_batch[~df_batch["is_reference_row"]].copy()
+    if analysis.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    for (method, gsd_m), group in analysis.groupby(["method", "gsd_m"], sort=True, dropna=False):
+        err_values = pd.to_numeric(group["comparison_abs_rel_err"], errors="coerce")
+        runtime_values = pd.to_numeric(group["runtime_sec"], errors="coerce")
+        reference_kinds = sorted(
+            {
+                str(value)
+                for value in group["comparison_reference_kind"].dropna().tolist()
+                if str(value) and str(value) != "none"
+            }
+        )
+        rows.append(
+            {
+                "method": method,
+                "gsd_m": gsd_m,
+                "area_count": int(group["area_id"].nunique()) if "area_id" in group.columns else int(len(group)),
+                "error_area_count": int(group.loc[err_values.notna(), "area_id"].nunique())
+                if "area_id" in group.columns
+                else int(err_values.notna().sum()),
+                "reference_kinds": " | ".join(reference_kinds) if reference_kinds else "none",
+                "mean_abs_rel_err": float(err_values.mean()) if err_values.notna().any() else float("nan"),
+                "median_abs_rel_err": float(err_values.median()) if err_values.notna().any() else float("nan"),
+                "std_abs_rel_err": float(err_values.std(ddof=0)) if err_values.notna().any() else float("nan"),
+                "p90_abs_rel_err": _p90(err_values),
+                "max_abs_rel_err": float(err_values.max()) if err_values.notna().any() else float("nan"),
+                "mean_runtime_sec": float(runtime_values.mean()) if runtime_values.notna().any() else float("nan"),
+                "median_runtime_sec": float(runtime_values.median()) if runtime_values.notna().any() else float("nan"),
+            }
+        )
+
+    return pd.DataFrame.from_records(rows, columns=columns).sort_values(["gsd_m", "method"]).reset_index(drop=True)
+
+
+def _batch_metric_pivot(
+    df_batch: pd.DataFrame,
+    *,
+    value_column: str,
+    sheet_label: str,
+) -> pd.DataFrame:
+    analysis = df_batch[~df_batch["is_reference_row"]].copy()
+    if analysis.empty or value_column not in analysis.columns:
+        return pd.DataFrame(columns=["method"])
+
+    metric = analysis.dropna(subset=["method", "gsd_m", value_column]).copy()
+    if metric.empty:
+        return pd.DataFrame(columns=["method"])
+
+    wide = metric.pivot_table(index="method", columns="gsd_m", values=value_column, aggfunc="median")
+    if wide.empty:
+        return pd.DataFrame(columns=["method"])
+
+    wide = wide.sort_index(axis=0).sort_index(axis=1)
+    wide.columns = [f"{sheet_label}_gsd_{float(col):g}" for col in wide.columns.to_list()]
+    return wide.reset_index()
+
+
+def write_batch_comparison_workbook(
+    outdir_root: Path,
+    *,
+    batch_jobs: list[tuple[Path, Path]],
+) -> Path | None:
+    frames: list[pd.DataFrame] = []
+    run_rows: list[dict[str, Any]] = []
+
+    for dem_path, outdir_path in batch_jobs:
+        workbook_path = outdir_path / "results.xlsx"
+        if not workbook_path.exists():
+            continue
+        try:
+            df = pd.read_excel(workbook_path, sheet_name="results_long")
+        except Exception:
+            continue
+        if df.empty:
+            continue
+
+        df = df.copy()
+        df.insert(0, "area_id", outdir_path.name)
+        df.insert(1, "dem_name", dem_path.name)
+        df.insert(2, "dem_path", str(dem_path))
+        df.insert(3, "run_dir", str(outdir_path))
+        frames.append(df)
+        run_rows.append(
+            {
+                "area_id": outdir_path.name,
+                "dem_name": dem_path.name,
+                "dem_path": str(dem_path),
+                "run_dir": str(outdir_path),
+                "results_workbook": str(workbook_path),
+                "row_count": int(len(df)),
+                "gsd_count": int(df["gsd_m"].nunique()) if "gsd_m" in df.columns else 0,
+                "method_count": int(df["method"].nunique()) if "method" in df.columns else 0,
+            }
+        )
+
+    if not frames:
+        return None
+
+    batch_df = pd.concat(frames, ignore_index=True, sort=False)
+    batch_df = _append_comparison_reference_columns(batch_df)
+    summary_df = _batch_summary_sheet(batch_df)
+    pivot_error_df = _batch_metric_pivot(
+        batch_df,
+        value_column="comparison_abs_rel_err",
+        sheet_label="median_abs_rel_err",
+    )
+    pivot_runtime_df = _batch_metric_pivot(
+        batch_df,
+        value_column="runtime_sec",
+        sheet_label="median_runtime_sec",
+    )
+    runs_df = pd.DataFrame.from_records(run_rows)
+
+    workbook_path = outdir_root / "batch_summary.xlsx"
+    outdir_root.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        batch_df.to_excel(writer, sheet_name="batch_results_long", index=False)
+        summary_df.to_excel(writer, sheet_name="batch_summary", index=False)
+        runs_df.to_excel(writer, sheet_name="batch_runs", index=False)
+        if not pivot_error_df.empty:
+            pivot_error_df.to_excel(writer, sheet_name="pivot_error", index=False)
+        if not pivot_runtime_df.empty:
+            pivot_runtime_df.to_excel(writer, sheet_name="pivot_runtime", index=False)
+
+        for sheet_name, table_seed in [
+            ("batch_results_long", "BatchResultsLongTable"),
+            ("batch_summary", "BatchSummaryTable"),
+            ("batch_runs", "BatchRunsTable"),
+            ("pivot_error", "BatchPivotErrorTable"),
+            ("pivot_runtime", "BatchPivotRuntimeTable"),
+        ]:
+            if sheet_name in writer.book.sheetnames:
+                ws = writer.book[sheet_name]
+                if ws.max_row >= 1 and ws.max_column >= 1:
+                    _add_excel_table_for_sheet(ws, name_seed=table_seed)
+
+    return workbook_path
 
 
 def _excel_reference_curve(df_long: pd.DataFrame, value_column: str) -> pd.DataFrame:

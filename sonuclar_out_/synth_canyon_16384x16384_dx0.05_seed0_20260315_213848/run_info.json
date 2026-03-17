@@ -1,8 +1,8 @@
 {
-  "timestamp_utc": "2026-03-17T09:20:38.634283+00:00",
-  "dem": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_plane_16384x16384_dx0.05_seed0_20260315_213848.tif",
+  "timestamp_utc": "2026-03-17T10:35:21.691352+00:00",
+  "dem": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_canyon_16384x16384_dx0.05_seed0_20260315_213848.tif",
   "dem_info": {
-    "path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_plane_16384x16384_dx0.05_seed0_20260315_213848.tif",
+    "path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_canyon_16384x16384_dx0.05_seed0_20260315_213848.tif",
     "crs": "EPSG:32636",
     "transform": [
       0.05,
@@ -23,13 +23,13 @@
     "dy": 0.05
   },
   "synthetic_reference": {
-    "sidecar_path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_plane_16384x16384_dx0.05_seed0_20260315_213848.reference.json",
+    "sidecar_path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_canyon_16384x16384_dx0.05_seed0_20260315_213848.reference.json",
     "terrain_family": "raster_first",
     "has_continuous_ground_truth": false,
     "continuous_gt_is_gsd_independent": false,
     "continuous_gt_surface_area_m2": null,
     "continuous_gt_planar_area_m2": null,
-    "native_reference_surface_area_m2": 867833.3592480146,
+    "native_reference_surface_area_m2": 2611788.6146339923,
     "resolution_count": 1
   },
   "versions": {

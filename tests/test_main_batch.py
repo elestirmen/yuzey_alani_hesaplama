@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import rasterio
 from rasterio.crs import CRS
@@ -266,3 +267,49 @@ def test_main_default_config_demlist_dispatches_each_tif_to_subdir(
         str(tmp_path / "batch_out" / "alpha"),
         str(tmp_path / "batch_out" / "beta"),
     ]
+
+
+def test_main_batch_writes_batch_summary_workbook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dem_dir = tmp_path / "dems"
+    dem_dir.mkdir()
+    z_alpha = np.linspace(0.0, 1.0, 64, dtype=np.float64).reshape(8, 8)
+    z_beta = np.linspace(1.0, 2.0, 64, dtype=np.float64).reshape(8, 8)
+    _write_dem_geotiff(dem_dir / "alpha.tif", z_alpha, dx=1.0, dy=1.0, crs=CRS.from_epsg(3857))
+    _write_dem_geotiff(dem_dir / "beta.tif", z_beta, dx=1.0, dy=1.0, crs=CRS.from_epsg(3857))
+
+    out_root = tmp_path / "batch_out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "run",
+            "--dem",
+            str(dem_dir),
+            "--outdir",
+            str(out_root),
+            "--gsd",
+            "1",
+            "--methods",
+            "gradient_multiplier",
+        ],
+    )
+
+    rc = main.main()
+
+    assert rc == 0
+    workbook_path = out_root / "batch_summary.xlsx"
+    assert workbook_path.exists()
+
+    xls = pd.ExcelFile(workbook_path)
+    assert {"batch_results_long", "batch_summary", "batch_runs", "pivot_runtime"} <= set(xls.sheet_names)
+
+    df_long = pd.read_excel(workbook_path, sheet_name="batch_results_long")
+    assert set(df_long["area_id"]) == {"alpha", "beta"}
+    assert set(df_long["method"]) == {"gradient_multiplier"}
+    assert set(df_long["comparison_reference_kind"]) == {"none"}
+
+    df_summary = pd.read_excel(workbook_path, sheet_name="batch_summary")
+    assert len(df_summary) == 1
+    assert df_summary.iloc[0]["method"] == "gradient_multiplier"
+    assert int(df_summary.iloc[0]["area_count"]) == 2

@@ -679,6 +679,17 @@ def _run_surface_area_batch(
     return 0
 
 
+def _write_batch_summary_workbook(*, outdir_root: Path, batch_jobs: list[tuple[Path, Path]]) -> int:
+    try:
+        workbook_path = surface_area_cli.write_batch_comparison_workbook(outdir_root, batch_jobs=batch_jobs)
+    except Exception as exc:
+        print(f"ERROR: failed to write batch summary workbook: {exc}", file=sys.stderr)
+        return 2
+    if workbook_path is not None:
+        print(f"Batch comparison workbook written: {workbook_path}")
+    return 0
+
+
 def _run_main_config(run_config: RunConfig) -> int:
     run_config.validate()
     dem_root = Path(run_config.dem)
@@ -688,7 +699,7 @@ def _run_main_config(run_config: RunConfig) -> int:
 
     outdir_root = Path(run_config.outdir)
     batch_jobs = _resolve_batch_outdirs(dem_paths, outdir_root)
-    return _run_surface_area_batch(
+    rc = _run_surface_area_batch(
         dem_root=dem_root,
         outdir_root=outdir_root,
         batch_jobs=batch_jobs,
@@ -696,6 +707,11 @@ def _run_main_config(run_config: RunConfig) -> int:
             run_config._build_single_run_argv(dem=dem_path, outdir=outdir_path)
         ),
     )
+    if rc != 0:
+        return rc
+    if len(batch_jobs) > 1:
+        return _write_batch_summary_workbook(outdir_root=outdir_root, batch_jobs=batch_jobs)
+    return 0
 
 
 def _dispatch_cli_args(argv: list[str]) -> int:
@@ -725,12 +741,17 @@ def _dispatch_cli_args(argv: list[str]) -> int:
         batch_args.outdir = outdir_path
         return int(surface_area_cli.cmd_run(batch_args))
 
-    return _run_surface_area_batch(
+    rc = _run_surface_area_batch(
         dem_root=dem_root,
         outdir_root=outdir_root,
         batch_jobs=batch_jobs,
         run_single=_run_single,
     )
+    if rc != 0:
+        return rc
+    if len(batch_jobs) > 1:
+        return _write_batch_summary_workbook(outdir_root=outdir_root, batch_jobs=batch_jobs)
+    return 0
 
 
 def main() -> int:
