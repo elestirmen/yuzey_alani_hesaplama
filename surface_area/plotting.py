@@ -31,6 +31,10 @@ def _reference_curve(df_long: pd.DataFrame, value_column: str) -> pd.DataFrame:
     return reference.groupby("gsd_m", as_index=False, sort=True).first()
 
 
+def _ratio_to_excess_percent(values: pd.Series) -> pd.Series:
+    return (pd.to_numeric(values, errors="coerce") - 1.0) * 100.0
+
+
 def _plot_reference_series(
     ax: plt.Axes,
     df_long: pd.DataFrame,
@@ -151,16 +155,17 @@ def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = _prep_axes("A3D/A2D Ratio vs GSD", "GSD (m)", "A3D / A2D (-)")
+    fig, ax = _prep_axes("Surface Excess vs GSD", "GSD (m)", "(A3D / A2D - 1) (%)")
     ax.set_xscale("log")
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0, zorder=1)
 
     for method, g in df_long.dropna(subset=["ratio"]).groupby("method", sort=True):
         g = g.sort_values("gsd_m")
-        ax.plot(g["gsd_m"], g["ratio"], marker="o", linewidth=1.5, label=str(method))
+        ax.plot(g["gsd_m"], _ratio_to_excess_percent(g["ratio"]), marker="o", linewidth=1.5, label=str(method))
 
     _plot_reference_series(
         ax,
-        df_long,
+        df_long.assign(synthetic_native_ref_ratio=_ratio_to_excess_percent(df_long["synthetic_native_ref_ratio"])),
         value_column="synthetic_native_ref_ratio",
         label="Native-grid reference (per GSD)",
         color="black",
@@ -168,7 +173,7 @@ def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
     )
     _plot_reference_series(
         ax,
-        df_long,
+        df_long.assign(continuous_gt_ratio=_ratio_to_excess_percent(df_long["continuous_gt_ratio"])),
         value_column="continuous_gt_ratio",
         label="Continuous ground truth (GSD-independent)",
         color="tab:red",
