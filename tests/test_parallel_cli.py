@@ -428,6 +428,7 @@ def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -
     assert charts_ws["A2"].value == "Excel chart nesneleri ile duzenlenebilir dashboard gorunumu"
     first_column_values = {cell.value for cell in charts_ws["A"] if isinstance(cell.value, str)}
     assert "A3D vs GSD - kaynak veri" in first_column_values
+    assert "Surface Excess vs GSD - kaynak veri" in first_column_values
     assert charts_ws.max_row >= 80
     assert len(charts_ws._charts) >= 3
     assert len(charts_ws.tables) >= 1

@@ -92,7 +92,7 @@ def test_runconfig_to_argv_rejects_directory_input(tmp_path: Path) -> None:
         plots=False,
     )
 
-    with pytest.raises(ValueError, match="single DEM file"):
+    with pytest.raises(ValueError, match="single DEM GeoTIFF file"):
         cfg.to_argv()
 
 

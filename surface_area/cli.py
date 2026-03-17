@@ -40,6 +40,7 @@ from surface_area.plotting import (
     plot_micro_ratio_vs_gsd,
     plot_native_grid_ref_rel_err_vs_gsd,
     plot_ratio_vs_gsd,
+    plot_surface_excess_vs_gsd,
     plot_runtime_vs_gsd,
 )
 from surface_area.progress import ProgressPrinter
@@ -1206,6 +1207,29 @@ def _excel_gsd_chart_table(
     return table.sort_values("gsd_m").reset_index(drop=True)
 
 
+def _ratio_to_excess_percent(values: pd.Series) -> pd.Series:
+    return (pd.to_numeric(values, errors="coerce") - 1.0) * 100.0
+
+
+def _excel_surface_excess_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
+    table = _excel_gsd_chart_table(
+        df_long,
+        "ratio",
+        extra_series=[
+            ("synthetic_native_ref_ratio", "Native-grid reference (per GSD)"),
+            ("continuous_gt_ratio", "Continuous ground truth (GSD-independent)"),
+        ],
+    )
+    if table.empty:
+        return pd.DataFrame()
+
+    for column in table.columns:
+        if column == "gsd_m":
+            continue
+        table[column] = _ratio_to_excess_percent(table[column])
+    return table
+
+
 def _excel_runtime_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
     if "runtime_sec" not in df_long.columns:
         return pd.DataFrame()
@@ -1282,7 +1306,6 @@ def _excel_micro_ratio_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
 
 
 def _excel_chart_specs(df_long: pd.DataFrame) -> list[_ExcelChartSpec]:
-    anchors = [f"A{6 + (index * 23)}" for index in range(8)]
     specs: list[_ExcelChartSpec] = []
 
     def _append(
@@ -1301,7 +1324,7 @@ def _excel_chart_specs(df_long: pd.DataFrame) -> list[_ExcelChartSpec]:
                 title=title,
                 x_title=x_title,
                 y_title=y_title,
-                anchor=anchors[len(specs)],
+                anchor=f"A{6 + (len(specs) * 23)}",
                 frame=frame,
                 chart_type=chart_type,
                 log_x=log_x,
@@ -1335,6 +1358,14 @@ def _excel_chart_specs(df_long: pd.DataFrame) -> list[_ExcelChartSpec]:
                 ("continuous_gt_ratio", "Continuous ground truth (GSD-independent)"),
             ],
         ),
+        chart_type="shared_x",
+        log_x=True,
+    )
+    _append(
+        title="Surface Excess vs GSD",
+        x_title="GSD (m)",
+        y_title="(A3D / A2D - 1) (%)",
+        frame=_excel_surface_excess_chart_table(df_long),
         chart_type="shared_x",
         log_x=True,
     )
@@ -2078,6 +2109,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             progress.log("Plotting...")
             plot_a3d_vs_gsd(df_long, outdir)
             plot_ratio_vs_gsd(df_long, outdir)
+            plot_surface_excess_vs_gsd(df_long, outdir)
             plot_continuous_gt_rel_err_vs_gsd(df_long, outdir)
             plot_native_grid_ref_rel_err_vs_gsd(df_long, outdir)
             plot_runtime_vs_gsd(df_long, outdir)

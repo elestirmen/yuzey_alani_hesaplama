@@ -17,6 +17,7 @@ from surface_area.plotting import (
     plot_error_vs_runtime,
     plot_native_grid_ref_rel_err_vs_gsd,
     plot_ratio_vs_gsd,
+    plot_surface_excess_vs_gsd,
     plot_runtime_vs_gsd,
 )
 
@@ -121,6 +122,27 @@ def test_plot_ratio_vs_gsd_adds_reference_lines(monkeypatch, tmp_path: Path) -> 
     assert "Native-grid reference (per GSD)" in captured
     assert np.allclose(captured["Continuous ground truth (GSD-independent)"][1], [1.1, 1.1])
     assert np.allclose(captured["Native-grid reference (per GSD)"][1], [1.0, 0.96])
+
+
+def test_plot_surface_excess_vs_gsd_adds_reference_lines(monkeypatch, tmp_path: Path) -> None:
+    captured = _capture_lines(monkeypatch, plot_surface_excess_vs_gsd, _demo_results_frame(), tmp_path)
+
+    assert "Continuous ground truth (GSD-independent)" in captured
+    assert "Native-grid reference (per GSD)" in captured
+    assert np.allclose(captured["Continuous ground truth (GSD-independent)"][1], [10.0, 10.0])
+    assert np.allclose(captured["Native-grid reference (per GSD)"][1], [0.0, -4.0])
+
+
+def test_plot_surface_excess_vs_gsd_handles_missing_reference_columns(monkeypatch, tmp_path: Path) -> None:
+    df = _demo_results_frame()[["gsd_m", "method", "ratio"]].copy()
+
+    captured = _capture_lines(monkeypatch, plot_surface_excess_vs_gsd, df, tmp_path)
+
+    assert "gradient_multiplier" in captured
+    assert "tin_2tri_cell" in captured
+    assert "Native-grid reference (per GSD)" not in captured
+    assert "Continuous ground truth (GSD-independent)" not in captured
+    assert np.allclose(captured["gradient_multiplier"][1], [1.0, -5.0])
 
 
 def test_plot_continuous_gt_rel_err_vs_gsd_uses_continuous_error_column(monkeypatch, tmp_path: Path) -> None:

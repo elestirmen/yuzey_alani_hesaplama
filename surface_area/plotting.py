@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -33,6 +34,21 @@ def _reference_curve(df_long: pd.DataFrame, value_column: str) -> pd.DataFrame:
 
 def _ratio_to_excess_percent(values: pd.Series) -> pd.Series:
     return (pd.to_numeric(values, errors="coerce") - 1.0) * 100.0
+
+
+def _transformed_column_frame(
+    df_long: pd.DataFrame,
+    *,
+    value_column: str,
+    transform: Callable[[pd.Series], pd.Series] | None = None,
+) -> pd.DataFrame:
+    if value_column not in df_long.columns:
+        return pd.DataFrame(columns=df_long.columns)
+
+    frame = df_long.copy()
+    if transform is not None:
+        frame[value_column] = transform(frame[value_column])
+    return frame
 
 
 def _plot_reference_series(
@@ -151,21 +167,32 @@ def plot_a3d_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
     return path
 
 
-def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
+def _plot_ratio_family_vs_gsd(
+    df_long: pd.DataFrame,
+    outdir: str | Path,
+    *,
+    title: str,
+    ylabel: str,
+    filename: str,
+    transform: Callable[[pd.Series], pd.Series] | None = None,
+    zero_baseline: bool = False,
+) -> Path:
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = _prep_axes("Surface Excess vs GSD", "GSD (m)", "(A3D / A2D - 1) (%)")
+    fig, ax = _prep_axes(title, "GSD (m)", ylabel)
     ax.set_xscale("log")
-    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0, zorder=1)
+    if zero_baseline:
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0, zorder=1)
 
-    for method, g in df_long.dropna(subset=["ratio"]).groupby("method", sort=True):
+    ratio = _transformed_column_frame(df_long, value_column="ratio", transform=transform)
+    for method, g in ratio.dropna(subset=["ratio"]).groupby("method", sort=True):
         g = g.sort_values("gsd_m")
-        ax.plot(g["gsd_m"], _ratio_to_excess_percent(g["ratio"]), marker="o", linewidth=1.5, label=str(method))
+        ax.plot(g["gsd_m"], g["ratio"], marker="o", linewidth=1.5, label=str(method))
 
     _plot_reference_series(
         ax,
-        df_long.assign(synthetic_native_ref_ratio=_ratio_to_excess_percent(df_long["synthetic_native_ref_ratio"])),
+        _transformed_column_frame(df_long, value_column="synthetic_native_ref_ratio", transform=transform),
         value_column="synthetic_native_ref_ratio",
         label="Native-grid reference (per GSD)",
         color="black",
@@ -173,7 +200,7 @@ def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
     )
     _plot_reference_series(
         ax,
-        df_long.assign(continuous_gt_ratio=_ratio_to_excess_percent(df_long["continuous_gt_ratio"])),
+        _transformed_column_frame(df_long, value_column="continuous_gt_ratio", transform=transform),
         value_column="continuous_gt_ratio",
         label="Continuous ground truth (GSD-independent)",
         color="tab:red",
@@ -181,11 +208,33 @@ def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
     )
 
     ax.legend(loc="best", fontsize=9)
-    path = outdir / "ratio_vs_GSD.png"
+    path = outdir / filename
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
     return path
+
+
+def plot_ratio_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
+    return _plot_ratio_family_vs_gsd(
+        df_long,
+        outdir,
+        title="A3D/A2D Ratio vs GSD",
+        ylabel="A3D / A2D (-)",
+        filename="ratio_vs_GSD.png",
+    )
+
+
+def plot_surface_excess_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path:
+    return _plot_ratio_family_vs_gsd(
+        df_long,
+        outdir,
+        title="Surface Excess vs GSD",
+        ylabel="(A3D / A2D - 1) (%)",
+        filename="surface_excess_vs_GSD.png",
+        transform=_ratio_to_excess_percent,
+        zero_baseline=True,
+    )
 
 
 def plot_continuous_gt_rel_err_vs_gsd(df_long: pd.DataFrame, outdir: str | Path) -> Path | None:
