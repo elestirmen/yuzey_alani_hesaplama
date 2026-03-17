@@ -320,10 +320,19 @@ def _native_gsd_scalar(info: RasterInfo) -> float:
     return 0.5 * (dx + dy)
 
 
+def _minimum_square_gsd_without_upsample(info: RasterInfo) -> float:
+    dx = float(info.dx)
+    dy = float(info.dy)
+    if dx <= 0 or dy <= 0:
+        raise ValueError(f"Invalid pixel sizes from raster: dx={dx}, dy={dy}")
+    return max(dx, dy)
+
+
 def _resolve_gsd_targets(
     values: list[str] | list[str | float] | None,
     *,
     raster_info: RasterInfo,
+    allow_upsample: bool = False,
 ) -> list[_ResolvedGsdTarget]:
     raw_values = list(values) if values is not None else list(DEFAULT_GSD_LIST)
     if not raw_values:
@@ -331,6 +340,12 @@ def _resolve_gsd_targets(
 
     resolved: list[_ResolvedGsdTarget] = []
     seen: set[tuple[str, str]] = set()
+    min_square_gsd = _minimum_square_gsd_without_upsample(raster_info)
+    native_desc = (
+        f"{float(raster_info.dx):g}"
+        if math.isclose(float(raster_info.dx), float(raster_info.dy), rel_tol=1e-9, abs_tol=1e-12)
+        else f"{float(raster_info.dx):g} x {float(raster_info.dy):g}"
+    )
 
     for value in raw_values:
         if isinstance(value, str):
@@ -353,12 +368,22 @@ def _resolve_gsd_targets(
                     ) from exc
                 if gsd_m <= 0:
                     raise ValueError(f"--gsd must contain positive values, got: {raw_values}")
+                if (not allow_upsample) and (gsd_m + 1e-12) < min_square_gsd:
+                    raise ValueError(
+                        f"--gsd={gsd_m:g} would upsample beyond the source grid "
+                        f"(native pixel size: {native_desc}). Use --allow-upsample to enable finer targets."
+                    )
                 key = _grid_resolution_key(gsd_m, gsd_m)
                 target = _ResolvedGsdTarget(gsd_m=gsd_m, use_native_grid=False, label=f"{gsd_m:g}")
         else:
             gsd_m = float(value)
             if gsd_m <= 0:
                 raise ValueError(f"--gsd must contain positive values, got: {raw_values}")
+            if (not allow_upsample) and (gsd_m + 1e-12) < min_square_gsd:
+                raise ValueError(
+                    f"--gsd={gsd_m:g} would upsample beyond the source grid "
+                    f"(native pixel size: {native_desc}). Use --allow-upsample to enable finer targets."
+                )
             key = _grid_resolution_key(gsd_m, gsd_m)
             target = _ResolvedGsdTarget(gsd_m=gsd_m, use_native_grid=False, label=f"{gsd_m:g}")
 
@@ -702,6 +727,11 @@ def _run_single_gsd(job: _RunJob, *, show_progress: bool = False, loaded_rois: A
 
 def _env_versions() -> dict[str, str]:
     import matplotlib
+    try:
+        import numba
+        numba_version = numba.__version__
+    except Exception:
+        numba_version = "not-installed"
     import numpy
     import pandas
     import rasterio
@@ -711,6 +741,7 @@ def _env_versions() -> dict[str, str]:
         "python": sys.version.replace("\n", " "),
         "surface_area": __version__,
         "numpy": numpy.__version__,
+        "numba": numba_version,
         "rasterio": rasterio.__version__,
         "scipy": scipy.__version__,
         "pandas": pandas.__version__,
@@ -1565,8 +1596,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             f"Target GSD list in meters or '{GSD_NATIVE_TOKEN}' for the source grid "
-            f"(default: {' '.join(_format_gsd_value(v) for v in DEFAULT_GSD_LIST)})"
+            f"(default: {' '.join(_format_gsd_value(v) for v in DEFAULT_GSD_LIST)}). "
+            "Finer-than-native targets are rejected unless --allow-upsample is set."
         ),
+    )
+    run.add_argument(
+        "--allow-upsample",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow target GSD values that are finer than the source grid.",
     )
     run.add_argument(
         "--methods",
@@ -1662,7 +1700,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
 
     try:
-        gsd_targets = _resolve_gsd_targets(args.gsd, raster_info=info)
+        gsd_targets = _resolve_gsd_targets(args.gsd, raster_info=info, allow_upsample=bool(args.allow_upsample))
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
@@ -1693,6 +1731,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "params": {
             "gsd_specs": [target.label for target in gsd_targets],
             "gsd_list": gsd_list,
+            "allow_upsample": bool(args.allow_upsample),
             "methods": method_list,
             "resampling": rs.name,
             "nodata_override": args.nodata,

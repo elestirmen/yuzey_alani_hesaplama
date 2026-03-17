@@ -20,10 +20,27 @@ from functools import lru_cache
 from typing import Callable, Literal
 
 import numpy as np
+try:
+    import numba
+    from numba import njit
+except Exception:  # pragma: no cover - optional dependency
+    numba = None
+    njit = None
 
 from surface_area.io import iter_block_windows, read_window_float32
 
 ProgressFn = Callable[[str, int, int], None]
+
+NUMBA_AVAILABLE = numba is not None
+
+
+def _optional_njit(*args, **kwargs):
+    if njit is None:
+        def decorator(fn):
+            return fn
+
+        return decorator
+    return njit(*args, **kwargs)
 
 
 SlopeMethod = Literal["horn", "zt"]
@@ -317,6 +334,24 @@ def _sector_jenness_triangles(dx: float, dy: float) -> tuple[tuple[np.ndarray, n
     return sectors
 
 
+@lru_cache(maxsize=16)
+def _sector_jenness_geometry_arrays(dx: float, dy: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return cached array geometry for the sector footprint and its first subdivision."""
+    sectors = _sector_jenness_triangles(float(dx), float(dy))
+    sector_points = np.empty((len(sectors), 3, 2), dtype=np.float64)
+    sector_children = np.empty((len(sectors), 4, 3, 2), dtype=np.float64)
+    for sector_i, (p0, p1, p2) in enumerate(sectors):
+        sector_points[sector_i, 0] = p0
+        sector_points[sector_i, 1] = p1
+        sector_points[sector_i, 2] = p2
+        children = _subdivide_triangle(p0, p1, p2)
+        for child_i, (c0, c1, c2) in enumerate(children):
+            sector_children[sector_i, child_i, 0] = c0
+            sector_children[sector_i, child_i, 1] = c1
+            sector_children[sector_i, child_i, 2] = c2
+    return sector_points, sector_children
+
+
 @lru_cache(maxsize=8)
 def _sector_jenness_triangle_rule(min_samples: int) -> tuple[np.ndarray, np.ndarray]:
     """Return a deterministic triangular quadrature rule with at least min_samples points."""
@@ -455,6 +490,372 @@ def _triangle_quadrature_integral_batch(
     dzdy = (2.0 * b * y[None, :]) + (c * x[None, :]) + e
     vals = np.sqrt(1.0 + dzdx * dzdx + dzdy * dzdy)
     return area * (vals @ weights)
+
+
+@_optional_njit(cache=True)
+def _triangle_quadrature_integral_numba(
+    coeff: np.ndarray,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+) -> float:
+    area = 0.5 * abs((x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0))
+    if area <= 0.0:
+        return 0.0
+
+    a = float(coeff[0])
+    b = float(coeff[1])
+    c = float(coeff[2])
+    d = float(coeff[3])
+    e = float(coeff[4])
+
+    total = 0.0
+    for i in range(weights.shape[0]):
+        bx = float(bary[i, 0])
+        by = float(bary[i, 1])
+        bz = float(bary[i, 2])
+        xi = bx * x0 + by * x1 + bz * x2
+        yi = bx * y0 + by * y1 + bz * y2
+        dzdx_i = (2.0 * a * xi) + (c * yi) + d
+        dzdy_i = (2.0 * b * yi) + (c * xi) + e
+        total += float(weights[i]) * math.sqrt(1.0 + dzdx_i * dzdx_i + dzdy_i * dzdy_i)
+    return area * total
+
+
+@_optional_njit(cache=True)
+def _adaptive_triangle_integral_numba(
+    coeff: np.ndarray,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+    level: int,
+    coarse: float,
+) -> tuple[float, int, bool]:
+    coarse_here = float(coarse)
+    if not math.isfinite(coarse_here):
+        return math.nan, level, False
+    if level >= max_level:
+        return coarse_here, level, True
+
+    remaining_levels = max_level - level
+    if remaining_levels < 0:
+        remaining_levels = 0
+    stack_cap = 1 + (3 * remaining_levels)
+    if stack_cap < 1:
+        stack_cap = 1
+
+    stack_x0 = np.empty((stack_cap,), dtype=np.float64)
+    stack_y0 = np.empty((stack_cap,), dtype=np.float64)
+    stack_x1 = np.empty((stack_cap,), dtype=np.float64)
+    stack_y1 = np.empty((stack_cap,), dtype=np.float64)
+    stack_x2 = np.empty((stack_cap,), dtype=np.float64)
+    stack_y2 = np.empty((stack_cap,), dtype=np.float64)
+    stack_abs_tol = np.empty((stack_cap,), dtype=np.float64)
+    stack_coarse = np.empty((stack_cap,), dtype=np.float64)
+    stack_level = np.empty((stack_cap,), dtype=np.int64)
+
+    stack_size = 1
+    stack_x0[0] = x0
+    stack_y0[0] = y0
+    stack_x1[0] = x1
+    stack_y1[0] = y1
+    stack_x2[0] = x2
+    stack_y2[0] = y2
+    stack_abs_tol[0] = abs_tol
+    stack_coarse[0] = coarse_here
+    stack_level[0] = level
+
+    total = 0.0
+    level_used = level
+
+    while stack_size > 0:
+        stack_size -= 1
+        cur_x0 = stack_x0[stack_size]
+        cur_y0 = stack_y0[stack_size]
+        cur_x1 = stack_x1[stack_size]
+        cur_y1 = stack_y1[stack_size]
+        cur_x2 = stack_x2[stack_size]
+        cur_y2 = stack_y2[stack_size]
+        cur_abs_tol = stack_abs_tol[stack_size]
+        cur_coarse = stack_coarse[stack_size]
+        cur_level = int(stack_level[stack_size])
+
+        if not math.isfinite(cur_coarse):
+            return math.nan, level_used, False
+        if cur_level >= max_level:
+            total += cur_coarse
+            if cur_level > level_used:
+                level_used = cur_level
+            continue
+
+        m01x = 0.5 * (cur_x0 + cur_x1)
+        m01y = 0.5 * (cur_y0 + cur_y1)
+        m12x = 0.5 * (cur_x1 + cur_x2)
+        m12y = 0.5 * (cur_y1 + cur_y2)
+        m20x = 0.5 * (cur_x2 + cur_x0)
+        m20y = 0.5 * (cur_y2 + cur_y0)
+
+        child0 = _triangle_quadrature_integral_numba(coeff, cur_x0, cur_y0, m01x, m01y, m20x, m20y, bary, weights)
+        child1 = _triangle_quadrature_integral_numba(coeff, m01x, m01y, cur_x1, cur_y1, m12x, m12y, bary, weights)
+        child2 = _triangle_quadrature_integral_numba(coeff, m20x, m20y, m12x, m12y, cur_x2, cur_y2, bary, weights)
+        child3 = _triangle_quadrature_integral_numba(coeff, m01x, m01y, m12x, m12y, m20x, m20y, bary, weights)
+        if (
+            (not math.isfinite(child0))
+            or (not math.isfinite(child1))
+            or (not math.isfinite(child2))
+            or (not math.isfinite(child3))
+        ):
+            return math.nan, level_used, False
+
+        fine = child0 + child1 + child2 + child3
+        tol = max(float(cur_abs_tol), float(rel_tol) * abs(fine))
+        next_level = cur_level + 1
+        if abs(fine - cur_coarse) <= tol or next_level >= max_level:
+            total += fine
+            if next_level > level_used:
+                level_used = next_level
+            continue
+
+        next_abs_tol = float(cur_abs_tol) * 0.25
+
+        stack_x0[stack_size] = m01x
+        stack_y0[stack_size] = m01y
+        stack_x1[stack_size] = m12x
+        stack_y1[stack_size] = m12y
+        stack_x2[stack_size] = m20x
+        stack_y2[stack_size] = m20y
+        stack_abs_tol[stack_size] = next_abs_tol
+        stack_coarse[stack_size] = child3
+        stack_level[stack_size] = next_level
+        stack_size += 1
+
+        stack_x0[stack_size] = m20x
+        stack_y0[stack_size] = m20y
+        stack_x1[stack_size] = m12x
+        stack_y1[stack_size] = m12y
+        stack_x2[stack_size] = cur_x2
+        stack_y2[stack_size] = cur_y2
+        stack_abs_tol[stack_size] = next_abs_tol
+        stack_coarse[stack_size] = child2
+        stack_level[stack_size] = next_level
+        stack_size += 1
+
+        stack_x0[stack_size] = m01x
+        stack_y0[stack_size] = m01y
+        stack_x1[stack_size] = cur_x1
+        stack_y1[stack_size] = cur_y1
+        stack_x2[stack_size] = m12x
+        stack_y2[stack_size] = m12y
+        stack_abs_tol[stack_size] = next_abs_tol
+        stack_coarse[stack_size] = child1
+        stack_level[stack_size] = next_level
+        stack_size += 1
+
+        stack_x0[stack_size] = cur_x0
+        stack_y0[stack_size] = cur_y0
+        stack_x1[stack_size] = m01x
+        stack_y1[stack_size] = m01y
+        stack_x2[stack_size] = m20x
+        stack_y2[stack_size] = m20y
+        stack_abs_tol[stack_size] = next_abs_tol
+        stack_coarse[stack_size] = child0
+        stack_level[stack_size] = next_level
+        stack_size += 1
+
+    return total, level_used, True
+
+
+@_optional_njit(cache=True)
+def _integrate_sector_jenness_cell_from_level1_numba(
+    coeff: np.ndarray,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+    sector_accepted: np.ndarray,
+    sector_fine: np.ndarray,
+    sector_child_coarse: np.ndarray,
+    sector_children: np.ndarray,
+) -> tuple[float, int, bool]:
+    total = 0.0
+    level_used = 0
+    sector_count = int(sector_children.shape[0])
+    sector_abs_tol = float(abs_tol) / float(sector_count) if abs_tol > 0 else 0.0
+    child_abs_tol = sector_abs_tol * 0.25
+
+    for sector_i in range(sector_count):
+        if bool(sector_accepted[sector_i]):
+            area = float(sector_fine[sector_i])
+            sector_level = 1
+        else:
+            area = 0.0
+            sector_level = 1
+            for child_i in range(sector_children.shape[1]):
+                child = sector_children[sector_i, child_i]
+                child_area, child_level, ok = _adaptive_triangle_integral_numba(
+                    coeff,
+                    float(child[0, 0]),
+                    float(child[0, 1]),
+                    float(child[1, 0]),
+                    float(child[1, 1]),
+                    float(child[2, 0]),
+                    float(child[2, 1]),
+                    bary,
+                    weights,
+                    rel_tol,
+                    child_abs_tol,
+                    max_level,
+                    1,
+                    float(sector_child_coarse[sector_i, child_i]),
+                )
+                if not ok:
+                    return math.nan, level_used, False
+                area += child_area
+                if child_level > sector_level:
+                    sector_level = child_level
+
+        if not math.isfinite(area):
+            return math.nan, level_used, False
+        total += area
+        if sector_level > level_used:
+            level_used = sector_level
+    return total, level_used, True
+
+
+@_optional_njit(cache=True)
+def _integrate_sector_jenness_cells_from_level1_numba(
+    coeffs: np.ndarray,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+    sector_accepted: np.ndarray,
+    sector_fine: np.ndarray,
+    sector_child_coarse: np.ndarray,
+    sector_children: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n = int(coeffs.shape[0])
+    areas = np.empty((n,), dtype=np.float64)
+    levels = np.zeros((n,), dtype=np.uint8)
+    finite = np.ones((n,), dtype=np.bool_)
+    for cell_i in range(n):
+        area, level_used, ok = _integrate_sector_jenness_cell_from_level1_numba(
+            coeffs[cell_i],
+            bary,
+            weights,
+            rel_tol,
+            abs_tol,
+            max_level,
+            sector_accepted[cell_i],
+            sector_fine[cell_i],
+            sector_child_coarse[cell_i],
+            sector_children,
+        )
+        if ok:
+            areas[cell_i] = area
+            levels[cell_i] = np.uint8(level_used)
+        else:
+            areas[cell_i] = math.nan
+            levels[cell_i] = np.uint8(0)
+            finite[cell_i] = False
+    return areas, levels, finite
+
+
+def _integrate_sector_jenness_fallback_cells_from_level1(
+    coeffs: np.ndarray,
+    dx: float,
+    dy: float,
+    bary: np.ndarray,
+    weights: np.ndarray,
+    *,
+    rel_tol: float,
+    abs_tol: float,
+    max_level: int,
+    sector_accepted: np.ndarray,
+    sector_fine: np.ndarray,
+    sector_child_coarse: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n = int(coeffs.shape[0])
+    if n == 0:
+        return (
+            np.zeros((0,), dtype=np.float64),
+            np.zeros((0,), dtype=np.uint8),
+            np.zeros((0,), dtype=bool),
+        )
+
+    if NUMBA_AVAILABLE and max_level > 0 and n >= 8:
+        _, sector_children = _sector_jenness_geometry_arrays(float(dx), float(dy))
+        coeffs_c = np.ascontiguousarray(coeffs, dtype=np.float64)
+        accepted_c = np.ascontiguousarray(sector_accepted.T, dtype=np.bool_)
+        fine_c = np.ascontiguousarray(sector_fine.T, dtype=np.float64)
+        child_c = np.ascontiguousarray(np.moveaxis(sector_child_coarse, -1, 0), dtype=np.float64)
+        bary_c = np.ascontiguousarray(bary, dtype=np.float64)
+        weights_c = np.ascontiguousarray(weights, dtype=np.float64)
+        areas, levels, finite = _integrate_sector_jenness_cells_from_level1_numba(
+            coeffs_c,
+            bary_c,
+            weights_c,
+            float(rel_tol),
+            float(abs_tol),
+            int(max_level),
+            accepted_c,
+            fine_c,
+            child_c,
+            np.ascontiguousarray(sector_children, dtype=np.float64),
+        )
+        return areas, levels, finite
+
+    areas = np.empty((n,), dtype=np.float64)
+    levels = np.zeros((n,), dtype=np.uint8)
+    finite = np.ones((n,), dtype=bool)
+    for cell_i, coeff in enumerate(coeffs):
+        if max_level <= 0:
+            area, level_used = _integrate_sector_jenness_cell(
+                coeff,
+                dx,
+                dy,
+                bary,
+                weights,
+                rel_tol=rel_tol,
+                abs_tol=abs_tol,
+                max_level=max_level,
+            )
+        else:
+            area, level_used = _integrate_sector_jenness_cell_from_level1(
+                coeff,
+                dx,
+                dy,
+                bary,
+                weights,
+                rel_tol=rel_tol,
+                abs_tol=abs_tol,
+                max_level=max_level,
+                sector_accepted=sector_accepted[:, cell_i],
+                sector_fine=sector_fine[:, cell_i],
+                sector_child_coarse=sector_child_coarse[:, :, cell_i],
+            )
+        if math.isfinite(area):
+            areas[cell_i] = area
+            levels[cell_i] = np.uint8(level_used)
+        else:
+            areas[cell_i] = float("nan")
+            finite[cell_i] = False
+    return areas, levels, finite
 
 
 def _sector_jenness_level1_presolve(
@@ -950,25 +1351,23 @@ def sector_adaptive_jenness_integral_cell_areas(
     fallback_sector_fast = sector_fast[:, ~fast_mask]
     fallback_sector_fine = sector_fine[:, ~fast_mask]
     fallback_child_coarse = sector_child_coarse[:, :, ~fast_mask]
-    for cell_i, (flat_idx, coeff) in enumerate(zip(fallback_idx.tolist(), fallback_coeffs, strict=False)):
-        area, level_used = _integrate_sector_jenness_cell_from_level1(
-            coeff,
-            dx,
-            dy,
-            bary,
-            weights,
-            rel_tol=rel_tol,
-            abs_tol=abs_tol,
-            max_level=max_level,
-            sector_accepted=fallback_sector_fast[:, cell_i],
-            sector_fine=fallback_sector_fine[:, cell_i],
-            sector_child_coarse=fallback_child_coarse[:, :, cell_i],
-        )
-        if math.isfinite(area):
-            center_area.reshape(-1)[flat_idx] = area
-            center_levels.reshape(-1)[flat_idx] = np.uint8(level_used)
-        else:
-            center_valid.reshape(-1)[flat_idx] = False
+    fallback_areas, fallback_levels, fallback_finite = _integrate_sector_jenness_fallback_cells_from_level1(
+        fallback_coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=rel_tol,
+        abs_tol=abs_tol,
+        max_level=max_level,
+        sector_accepted=fallback_sector_fast,
+        sector_fine=fallback_sector_fine,
+        sector_child_coarse=fallback_child_coarse,
+    )
+    if fallback_idx.size > 0:
+        center_area.reshape(-1)[fallback_idx[fallback_finite]] = fallback_areas[fallback_finite]
+        center_levels.reshape(-1)[fallback_idx[fallback_finite]] = fallback_levels[fallback_finite]
+        center_valid.reshape(-1)[fallback_idx[~fallback_finite]] = False
 
     out[1:-1, 1:-1] = np.where(center_valid, center_area, 0.0)
     cell_valid[1:-1, 1:-1] = center_valid

@@ -209,8 +209,11 @@ config: dict[str, object] = {
     # "native" yazarsan goruntunun kendi piksel boyutunda calisir; yeniden ornekleme yapmaz.
     # Listedeki sayisal her deger icin raster yeniden orneklenir ve secili tum metodlar tekrar calisir.
     # Yani liste ne kadar uzunsa toplam sure de o kadar uzar.
+    # Varsayilan olarak native'den daha ince bir hedef GSD reddedilir; boyle bir upsample gerekiyorsa
+    # allow_upsample=True demen gerekir.
     # Kisa bir test icin [1, 2, 5] gibi kucuk bir liste daha pratiktir.
     "gsd": ["native", 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+    "allow_upsample": False,
     # ============================================================
     # 3) HANGI METOTLAR CALISACAK?
     # ============================================================
@@ -353,7 +356,18 @@ class RunConfig:
             "help": (
                 "Hedef GSD listesi. 'native' yazarsan rasteri kendi cozumunde kullanir; "
                 "sayisal degerlerde ise her hedef GSD icin yeniden ornekleme yapip secili tum metotlari tekrar calistirir. "
-                "Bu yuzden liste uzadikca toplam sure artar. Hizli deneme icin ['native', 1, 2, 5] gibi kisa bir liste iyidir."
+                "Bu yuzden liste uzadikca toplam sure artar. Varsayilan olarak native'den daha ince GSD reddedilir; "
+                "bunu acikca istemek icin allow_upsample=True kullanabilirsin. "
+                "Hizli deneme icin ['native', 1, 2, 5] gibi kisa bir liste iyidir."
+            )
+        },
+    )
+    allow_upsample: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "True ise native grid'den daha ince hedef GSD degerlerine izin verilir. "
+                "False ise istemeden upsample yapmamak icin bunlar reddedilir."
             )
         },
     )
@@ -587,6 +601,8 @@ class RunConfig:
             *resolved_methods,
         ]
 
+        if self.allow_upsample:
+            argv.append("--allow-upsample")
         if self.nodata is not None:
             argv.extend(["--nodata", f"{float(self.nodata):g}"])
         if self.plots:

@@ -15,6 +15,7 @@ from surface_area.cli import DEFAULT_METHODS, METHOD_CHOICES, build_parser
 from surface_area.methods import (
     _integrate_sector_jenness_cell,
     _integrate_sector_jenness_cell_from_level1,
+    _integrate_sector_jenness_fallback_cells_from_level1,
     _sector_jenness_level1_fastpath,
     _sector_jenness_level1_presolve,
     _sector_jenness_triangle_rule,
@@ -131,6 +132,33 @@ def test_sector_adaptive_jenness_mild_quadratic_is_finite_stable_and_above_a2d()
     assert _relative_error(coarse.a3d, fine.a3d) < 1e-3
 
 
+def test_sector_adaptive_jenness_max_level_zero_stays_finite() -> None:
+    rows = cols = 19
+    dx = dy = 1.0
+    X, Y = _centered_xy(rows, cols, dx=dx, dy=dy)
+    z = (0.01 * X * X + 0.008 * Y * Y + 0.003 * X * Y + 2.0).astype(np.float64, copy=False)
+    valid = np.isfinite(z)
+
+    res = compute_area_sector_adaptive_jenness_integral(
+        z,
+        dx,
+        dy,
+        valid,
+        rel_tol=1e-4,
+        abs_tol=0.0,
+        max_level=0,
+        min_samples=3,
+    )
+
+    expected_cells = (rows - 2) * (cols - 2)
+    expected_a2d = float(expected_cells) * dx * dy
+
+    assert res.valid_cells == expected_cells
+    assert math.isfinite(res.a3d)
+    assert res.a3d > expected_a2d
+    assert (res.sector_jenness_max_level_used or 0) == 0
+
+
 def test_sector_adaptive_jenness_skips_incomplete_3x3_stencils() -> None:
     rows = cols = 9
     dx = dy = 1.0
@@ -239,6 +267,63 @@ def test_sector_adaptive_jenness_level1_resume_matches_recursive() -> None:
         )
         assert resumed_level == expected_level
         assert abs(resumed_area - expected_area) < 1e-12
+
+
+def test_sector_adaptive_jenness_batched_resume_matches_cell_resume() -> None:
+    base_coeffs = np.array(
+        [
+            [0.8, 0.6, 0.4, 0.08, -0.03, 5.0],
+            [-0.7, 0.5, -0.35, 0.04, 0.02, 1.5],
+            [0.65, -0.45, 0.3, -0.01, 0.05, -2.0],
+        ],
+        dtype=np.float64,
+    )
+    coeffs = np.vstack([base_coeffs, base_coeffs + np.array([0.05, -0.03, 0.01, 0.0, 0.0, 0.0]), base_coeffs * 0.9])
+    dx = dy = 1.0
+    bary, weights = _sector_jenness_triangle_rule(3)
+
+    _, _, sector_accepted, sector_fine, sector_child_coarse = _sector_jenness_level1_presolve(
+        coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=1e-4,
+        abs_tol=0.0,
+        max_level=5,
+    )
+
+    batched_area, batched_level, batched_finite = _integrate_sector_jenness_fallback_cells_from_level1(
+        coeffs,
+        dx,
+        dy,
+        bary,
+        weights,
+        rel_tol=1e-4,
+        abs_tol=0.0,
+        max_level=5,
+        sector_accepted=sector_accepted,
+        sector_fine=sector_fine,
+        sector_child_coarse=sector_child_coarse,
+    )
+
+    assert batched_finite.all()
+    for i, coeff in enumerate(coeffs):
+        resumed_area, resumed_level = _integrate_sector_jenness_cell_from_level1(
+            coeff,
+            dx,
+            dy,
+            bary,
+            weights,
+            rel_tol=1e-4,
+            abs_tol=0.0,
+            max_level=5,
+            sector_accepted=sector_accepted[:, i],
+            sector_fine=sector_fine[:, i],
+            sector_child_coarse=sector_child_coarse[:, :, i],
+        )
+        assert batched_level[i] == resumed_level
+        assert abs(float(batched_area[i]) - resumed_area) < 1e-12
 
 
 def test_sector_adaptive_jenness_cli_smoke_writes_results_and_metadata(tmp_path: Path) -> None:

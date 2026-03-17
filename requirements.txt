@@ -1,4 +1,5 @@
 numpy>=2.0
+numba>=0.61
 rasterio>=1.4
 scipy>=1.14
 pandas>=2.2

@@ -110,6 +110,29 @@ def test_runconfig_to_argv_supports_native_gsd(tmp_path: Path) -> None:
     assert argv[argv.index("--gsd") + 1 : argv.index("--gsd") + 3] == ["native", "2"]
 
 
+def test_runconfig_to_argv_includes_allow_upsample_flag(tmp_path: Path) -> None:
+    dem_path = tmp_path / "dem_allow_upsample.tif"
+    _write_dem_geotiff(
+        dem_path,
+        np.zeros((8, 8), dtype=np.float64),
+        dx=2.0,
+        dy=2.0,
+        crs=CRS.from_epsg(3857),
+    )
+
+    cfg = RunConfig(
+        dem=str(dem_path),
+        outdir=str(tmp_path / "out_allow_upsample"),
+        gsd=["native", 1.0],
+        methods=["gradient_multiplier"],
+        plots=False,
+        allow_upsample=True,
+    )
+    argv = cfg.to_argv()
+
+    assert "--allow-upsample" in argv
+
+
 def test_cli_parallel_workers_matches_serial(tmp_path: Path) -> None:
     from surface_area.cli import main as cli_main
 
@@ -192,6 +215,65 @@ def test_cli_native_gsd_uses_source_grid_without_resampling(tmp_path: Path) -> N
 
     info_payload = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
     assert info_payload["params"]["gsd_specs"] == ["native"]
+
+
+def test_cli_rejects_finer_than_native_gsd_without_allow_upsample(tmp_path: Path, capsys) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_reject_upsample.tif"
+    outdir = tmp_path / "out_reject_upsample"
+    z = _demo_dem(20, 20, dx=2.0, dy=2.0)
+    _write_dem_geotiff(dem_path, z, dx=2.0, dy=2.0, crs=CRS.from_epsg(3857))
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "1",
+            "--methods",
+            "gradient_multiplier",
+        ]
+    )
+
+    assert rc == 2
+    assert "--allow-upsample" in capsys.readouterr().err
+    assert not (outdir / "results.xlsx").exists()
+
+
+def test_cli_allows_finer_than_native_gsd_with_explicit_flag(tmp_path: Path) -> None:
+    from surface_area.cli import main as cli_main
+
+    dem_path = tmp_path / "dem_allow_upsample.tif"
+    outdir = tmp_path / "out_allow_upsample"
+    z = _demo_dem(20, 20, dx=2.0, dy=2.0)
+    _write_dem_geotiff(dem_path, z, dx=2.0, dy=2.0, crs=CRS.from_epsg(3857))
+
+    rc = cli_main(
+        [
+            "run",
+            "--dem",
+            str(dem_path),
+            "--outdir",
+            str(outdir),
+            "--gsd",
+            "1",
+            "--allow-upsample",
+            "--methods",
+            "gradient_multiplier",
+        ]
+    )
+
+    assert rc == 0
+
+    df = _read_results_sheet(outdir / "results.xlsx", "results_long")
+    assert np.isclose(float(df.iloc[0]["dx"]), 1.0, rtol=0.0, atol=1e-12)
+
+    info_payload = json.loads((outdir / "run_info.json").read_text(encoding="utf-8"))
+    assert info_payload["params"]["allow_upsample"] is True
 
 
 def test_main_run_includes_synthetic_ground_truth_columns_when_reference_sidecar_exists(

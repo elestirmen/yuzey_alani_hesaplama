@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-03-17T08:11:14.494246+00:00",
+  "timestamp_utc": "2026-03-17T09:16:56.398046+00:00",
   "dem": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_plane_16384x16384_dx0.05_seed0_20260315_213848.tif",
   "dem_info": {
     "path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_plane_16384x16384_dx0.05_seed0_20260315_213848.tif",
@@ -36,6 +36,7 @@
     "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]",
     "surface_area": "0.1.0",
     "numpy": "2.4.2",
+    "numba": "not-installed",
     "rasterio": "1.5.0",
     "scipy": "1.17.1",
     "pandas": "3.0.1",
@@ -64,6 +65,7 @@
       20.0,
       50.0
     ],
+    "allow_upsample": false,
     "methods": [
       "jenness_window_8tri",
       "sector_adaptive_jenness_integral",
