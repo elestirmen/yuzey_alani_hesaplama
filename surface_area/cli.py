@@ -12,8 +12,9 @@ from time import perf_counter
 from typing import Any
 
 from openpyxl.chart import Reference, ScatterChart, Series
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 import pandas as pd
 import rasterio
@@ -143,6 +144,29 @@ class _ExcelTableRef:
     header_row: int
     data_start_row: int
     data_end_row: int
+
+
+_EXCEL_CHART_COLORS = [
+    "4E79A7",
+    "F28E2B",
+    "59A14F",
+    "E15759",
+    "76B7B2",
+    "EDC948",
+    "B07AA1",
+    "FF9DA7",
+]
+_EXCEL_MARKERS = ["circle", "triangle", "diamond", "square", "x", "star"]
+_EXCEL_HEADER_FILL = PatternFill(fill_type="solid", fgColor="1F4E78")
+_EXCEL_SUBHEADER_FILL = PatternFill(fill_type="solid", fgColor="D9EAF7")
+_EXCEL_TABLE_HEADER_FILL = PatternFill(fill_type="solid", fgColor="DCE6F1")
+_EXCEL_TABLE_BAND_FILL = PatternFill(fill_type="solid", fgColor="F7FBFF")
+_EXCEL_BORDER = Border(
+    left=Side(style="thin", color="D0D7DE"),
+    right=Side(style="thin", color="D0D7DE"),
+    top=Side(style="thin", color="D0D7DE"),
+    bottom=Side(style="thin", color="D0D7DE"),
+)
 
 
 def _format_gsd_value(value: str | float) -> str:
@@ -993,8 +1017,8 @@ def _excel_error_vs_runtime_table(df_long: pd.DataFrame) -> tuple[pd.DataFrame, 
         xs = group["runtime_total_sec"].astype(float).tolist()
         ys = group["abs_rel_err"].astype(float).tolist()
         padding = [None] * (max_len - len(xs))
-        columns[f"{method}_runtime_sec"] = xs + padding
-        columns[f"{method}_abs_rel_err"] = ys + padding
+        columns[f"{method} runtime (s)"] = xs + padding
+        columns[str(method)] = ys + padding
 
     return pd.DataFrame(columns), y_title
 
@@ -1022,7 +1046,7 @@ def _excel_micro_ratio_chart_table(df_long: pd.DataFrame) -> pd.DataFrame:
 
 
 def _excel_chart_specs(df_long: pd.DataFrame) -> list[_ExcelChartSpec]:
-    anchors = ["A3", "J3", "A19", "J19", "A35", "J35", "A51", "J51"]
+    anchors = [f"A{6 + (index * 23)}" for index in range(8)]
     specs: list[_ExcelChartSpec] = []
 
     def _append(
@@ -1135,6 +1159,52 @@ def _excel_cell_value(value: Any) -> Any:
     return value
 
 
+def _excel_table_name(seed: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in seed)
+    cleaned = cleaned.strip("_") or "ExcelTable"
+    if cleaned[0].isdigit():
+        cleaned = f"T_{cleaned}"
+    return cleaned[:240]
+
+
+def _add_excel_table_object(
+    ws: Worksheet,
+    *,
+    start_row: int,
+    end_row: int,
+    start_col: int,
+    end_col: int,
+    name_seed: str,
+) -> None:
+    if end_row <= start_row or end_col < start_col:
+        return
+
+    ref = f"{get_column_letter(start_col)}{start_row}:{get_column_letter(end_col)}{end_row}"
+    table = Table(displayName=_excel_table_name(name_seed), ref=ref)
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
+
+
+def _add_excel_table_for_sheet(ws: Worksheet, *, name_seed: str) -> None:
+    if ws.max_row < 2 or ws.max_column < 1:
+        return
+    _add_excel_table_object(
+        ws,
+        start_row=1,
+        end_row=ws.max_row,
+        start_col=1,
+        end_col=ws.max_column,
+        name_seed=name_seed,
+    )
+    ws.freeze_panes = "A2"
+
+
 def _write_excel_table(
     ws: Worksheet,
     *,
@@ -1143,25 +1213,47 @@ def _write_excel_table(
     title: str,
     frame: pd.DataFrame,
 ) -> _ExcelTableRef:
-    ws.cell(row=start_row, column=start_col, value=title).font = Font(bold=True)
+    title_cell = ws.cell(row=start_row, column=start_col, value=title)
+    title_cell.font = Font(bold=True, color="1F1F1F")
+    title_cell.fill = _EXCEL_SUBHEADER_FILL
+    title_cell.border = _EXCEL_BORDER
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
     header_row = start_row + 1
 
     for column_offset, column_name in enumerate(frame.columns):
         cell = ws.cell(row=header_row, column=start_col + column_offset, value=str(column_name))
-        cell.font = Font(bold=True)
+        cell.font = Font(bold=True, color="1F1F1F")
+        cell.fill = _EXCEL_TABLE_HEADER_FILL
+        cell.border = _EXCEL_BORDER
+        cell.alignment = Alignment(horizontal="center", vertical="center")
 
     for row_offset, row in enumerate(frame.itertuples(index=False, name=None), start=1):
         for column_offset, value in enumerate(row):
             excel_value = _excel_cell_value(value)
             cell = ws.cell(row=header_row + row_offset, column=start_col + column_offset, value=excel_value)
+            cell.border = _EXCEL_BORDER
+            cell.alignment = Alignment(horizontal="center" if isinstance(excel_value, Real) else "left", vertical="center")
+            if row_offset % 2 == 0:
+                cell.fill = _EXCEL_TABLE_BAND_FILL
             if isinstance(excel_value, Real) and not isinstance(excel_value, bool):
                 cell.number_format = "0.###############"
 
     for column_offset, column_name in enumerate(frame.columns):
-        ws.column_dimensions[get_column_letter(start_col + column_offset)].width = max(16, len(str(column_name)) + 2)
+        ws.column_dimensions[get_column_letter(start_col + column_offset)].width = max(18, len(str(column_name)) + 3)
+
+    ws.row_dimensions[start_row].height = 20
+    ws.row_dimensions[header_row].height = 22
 
     data_start_row = header_row + 1
     data_end_row = header_row + len(frame.index)
+    _add_excel_table_object(
+        ws,
+        start_row=header_row,
+        end_row=data_end_row,
+        start_col=start_col,
+        end_col=start_col + len(frame.columns) - 1,
+        name_seed=f"{title}_{start_row}",
+    )
     return _ExcelTableRef(
         min_col=start_col,
         max_col=start_col + len(frame.columns) - 1,
@@ -1185,11 +1277,55 @@ def _base_excel_scatter_chart(
     chart.x_axis.title = x_title
     chart.y_axis.title = y_title
     chart.legend.position = "r"
-    chart.width = 16
-    chart.height = 9
+    chart.legend.overlay = False
+    chart.width = 21
+    chart.height = 11.5
+    chart.varyColors = False
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    chart.x_axis.axPos = "b"
+    chart.y_axis.axPos = "l"
+    chart.x_axis.tickLblPos = "nextTo"
+    chart.y_axis.tickLblPos = "nextTo"
+    chart.x_axis.majorTickMark = "out"
+    chart.y_axis.majorTickMark = "out"
+    chart.x_axis.minorTickMark = "none"
+    chart.y_axis.minorTickMark = "none"
+    chart.x_axis.crosses = "min"
+    chart.y_axis.crosses = "min"
+    chart.x_axis.numFmt = "0.###"
+    chart.y_axis.numFmt = "0.###"
     if log_x:
         chart.x_axis.scaling.logBase = 10
     return chart
+
+
+def _style_excel_series(series: Series, *, label: str, index: int) -> None:
+    color = _EXCEL_CHART_COLORS[index % len(_EXCEL_CHART_COLORS)]
+    marker = _EXCEL_MARKERS[index % len(_EXCEL_MARKERS)]
+    line_width = 19050
+    marker_fill = "FFFFFF"
+    dash_style: str | None = None
+
+    if label == "Native-grid reference (per GSD)":
+        color = "1F1F1F"
+        marker = "diamond"
+        line_width = 25400
+        dash_style = "sysDot"
+    elif label == "Continuous ground truth (GSD-independent)":
+        color = "C00000"
+        marker = "square"
+        line_width = 25400
+        dash_style = "dash"
+
+    series.marker.symbol = marker
+    series.marker.size = 7
+    series.graphicalProperties.line.solidFill = color
+    series.graphicalProperties.line.width = line_width
+    if dash_style is not None:
+        series.graphicalProperties.line.prstDash = dash_style
+    series.marker.graphicalProperties.solidFill = marker_fill
+    series.marker.graphicalProperties.line.solidFill = color
 
 
 def _add_excel_shared_x_chart(
@@ -1213,7 +1349,7 @@ def _add_excel_shared_x_chart(
         max_row=table_ref.data_end_row,
     )
 
-    for column in range(table_ref.min_col + 1, table_ref.max_col + 1):
+    for index, column in enumerate(range(table_ref.min_col + 1, table_ref.max_col + 1)):
         values = Reference(
             ws,
             min_col=column,
@@ -1221,7 +1357,8 @@ def _add_excel_shared_x_chart(
             max_row=table_ref.data_end_row,
         )
         series = Series(values, xvalues, title_from_data=True)
-        series.marker.symbol = "circle"
+        label = str(ws.cell(row=table_ref.header_row, column=column).value or f"Series {index + 1}")
+        _style_excel_series(series, label=label, index=index)
         chart.series.append(series)
 
     ws.add_chart(chart, anchor)
@@ -1241,7 +1378,7 @@ def _add_excel_xy_pairs_chart(
         return
 
     chart = _base_excel_scatter_chart(title=title, x_title=x_title, y_title=y_title, log_x=log_x)
-    for column in range(table_ref.min_col, table_ref.max_col + 1, 2):
+    for index, column in enumerate(range(table_ref.min_col, table_ref.max_col + 1, 2)):
         if column + 1 > table_ref.max_col:
             break
         xvalues = Reference(
@@ -1257,7 +1394,8 @@ def _add_excel_xy_pairs_chart(
             max_row=table_ref.data_end_row,
         )
         series = Series(values, xvalues, title_from_data=True)
-        series.marker.symbol = "circle"
+        label = str(ws.cell(row=table_ref.header_row, column=column + 1).value or f"Series {index + 1}")
+        _style_excel_series(series, label=label, index=index)
         chart.series.append(series)
 
     ws.add_chart(chart, anchor)
@@ -1268,16 +1406,44 @@ def _write_excel_charts_sheet(workbook: Any, df_long: pd.DataFrame) -> None:
         del workbook["grafikler"]
 
     ws = workbook.create_sheet(title="grafikler")
-    ws["A1"] = "Bu sayfadaki grafikler Excel icinde duzenlenebilir; kaynak tablolar asagidadir."
-    ws["A1"].font = Font(bold=True)
-    ws["A2"] = "Not: Sayisal hucreler daha hassas inceleme icin yuksek ondalik gorunumuyle yazildi."
+    ws.sheet_view.showGridLines = True
+    ws.sheet_view.showRowColHeaders = True
+    ws.freeze_panes = "A6"
+    ws.sheet_view.zoomScale = 90
+
+    for column in range(1, 19):
+        ws.column_dimensions[get_column_letter(column)].width = 12
+
+    ws.merge_cells("A1:R1")
+    ws.merge_cells("A2:R2")
+    ws.merge_cells("A3:R3")
+    ws.merge_cells("A4:R4")
+    ws["A1"] = "Grafikler"
+    ws["A2"] = "Excel chart nesneleri ile duzenlenebilir dashboard gorunumu"
+    ws["A3"] = "Kaynak tablolar asagidadadir. Seri, eksen ve stil ayarlarini Excel icinden degistirebilirsiniz."
+    ws["A4"] = "Ipuclari: legend veya seri ustune tiklayip renk/kalinlik degistirebilir, eksenleri sag tikla bicimlendirebilirsiniz."
+
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=16)
+    ws["A1"].fill = _EXCEL_HEADER_FILL
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws["A2"].font = Font(bold=True, color="1F1F1F", size=11)
+    ws["A2"].fill = _EXCEL_SUBHEADER_FILL
+    ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
+    for cell_ref in ("A3", "A4"):
+        ws[cell_ref].font = Font(color="3C4858", size=10)
+        ws[cell_ref].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[3].height = 22
+    ws.row_dimensions[4].height = 36
 
     chart_specs = _excel_chart_specs(df_long)
     if not chart_specs:
         ws["A4"] = "Grafik uretmek icin uygun veri bulunamadi."
         return
 
-    table_row = 68
+    table_row = 6 + (len(chart_specs) * 23) + 6
     for spec in chart_specs:
         table_ref = _write_excel_table(
             ws,
@@ -1320,17 +1486,35 @@ def _write_results_workbook(
     workbook_path = outdir / "results.xlsx"
 
     with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        results_long_export: pd.DataFrame | None = None
+        results_wide_export: pd.DataFrame | None = None
+        reference_summary: pd.DataFrame | None = None
+        run_info_export = _run_info_sheet(run_info)
+
         if df_long is not None:
-            _results_long_sheet(df_long).to_excel(writer, sheet_name="results_long", index=False)
-            _results_wide(df_long).to_excel(writer, sheet_name="results_wide", index=False)
+            results_long_export = _results_long_sheet(df_long)
+            results_wide_export = _results_wide(df_long)
+            results_long_export.to_excel(writer, sheet_name="results_long", index=False)
+            results_wide_export.to_excel(writer, sheet_name="results_wide", index=False)
             reference_summary = _reference_summary_sheet(df_long)
             if reference_summary is not None and not reference_summary.empty:
                 reference_summary.to_excel(writer, sheet_name="reference_summary", index=False)
         if df_roi is not None and not df_roi.empty:
             df_roi.to_excel(writer, sheet_name="results_roi_long", index=False)
-        _run_info_sheet(run_info).to_excel(writer, sheet_name="run_info", index=False)
+        run_info_export.to_excel(writer, sheet_name="run_info", index=False)
         if df_long is not None and not df_long.empty:
             _write_excel_charts_sheet(writer.book, df_long)
+
+        if results_long_export is not None and not results_long_export.empty:
+            _add_excel_table_for_sheet(writer.book["results_long"], name_seed="ResultsLongTable")
+        if results_wide_export is not None and not results_wide_export.empty:
+            _add_excel_table_for_sheet(writer.book["results_wide"], name_seed="ResultsWideTable")
+        if reference_summary is not None and not reference_summary.empty:
+            _add_excel_table_for_sheet(writer.book["reference_summary"], name_seed="ReferenceSummaryTable")
+        if df_roi is not None and not df_roi.empty:
+            _add_excel_table_for_sheet(writer.book["results_roi_long"], name_seed="ResultsRoiLongTable")
+        if not run_info_export.empty:
+            _add_excel_table_for_sheet(writer.book["run_info"], name_seed="RunInfoTable")
 
     return workbook_path
 

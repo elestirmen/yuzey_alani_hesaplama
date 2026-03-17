@@ -338,11 +338,17 @@ def test_cli_wide_results_only_include_calculated_method_areas(tmp_path: Path) -
     )
 
     workbook = load_workbook(workbook_path)
+    assert len(workbook["results_long"].tables) == 1
+    assert len(workbook["results_wide"].tables) == 1
+    assert len(workbook["run_info"].tables) == 1
     charts_ws = workbook["grafikler"]
-    assert charts_ws["A1"].value == "Bu sayfadaki grafikler Excel icinde duzenlenebilir; kaynak tablolar asagidadir."
-    assert charts_ws["A68"].value == "A3D vs GSD - kaynak veri"
-    assert charts_ws.max_row >= 70
+    assert charts_ws["A1"].value == "Grafikler"
+    assert charts_ws["A2"].value == "Excel chart nesneleri ile duzenlenebilir dashboard gorunumu"
+    first_column_values = {cell.value for cell in charts_ws["A"] if isinstance(cell.value, str)}
+    assert "A3D vs GSD - kaynak veri" in first_column_values
+    assert charts_ws.max_row >= 80
     assert len(charts_ws._charts) >= 3
+    assert len(charts_ws.tables) >= 1
 
 
 def test_cli_multiscale_only_results_long_column_order_is_stable(tmp_path: Path) -> None:
