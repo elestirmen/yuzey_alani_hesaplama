@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+import surface_area.synthetic as synthetic_mod
 from surface_area.analytic_surfaces import build_analytic_surface, compute_continuous_surface_reference
 from surface_area.methods import (
     compute_area_bilinear_integral,
@@ -14,6 +15,7 @@ from surface_area.methods import (
 from surface_area.synthetic import (
     SyntheticGrid,
     compute_reference_surface_area,
+    generate_synthetic_dsm,
     paraboloid,
     plane,
     reference_area_two_triangles,
@@ -160,3 +162,61 @@ def test_analytic_tilted_plane_continuous_reference_matches_closed_form() -> Non
 
     assert ref.integration_method == "exact_closed_form"
     assert abs(ref.surface_area_m2 - expected) / expected < 1e-12
+
+
+def test_generate_synthetic_dsm_is_deterministic_per_preset_and_seed() -> None:
+    kwargs = dict(
+        rows=48,
+        cols=48,
+        dx=1.0,
+        dy=1.0,
+        preset="waves",
+        seed=17,
+        relief=0.0,
+        roughness_m=1.0,
+    )
+
+    z1 = generate_synthetic_dsm(**kwargs)
+    z2 = generate_synthetic_dsm(**kwargs)
+
+    assert np.array_equal(z1, z2)
+
+
+def test_generate_synthetic_dsm_uses_preset_specific_roughness_patterns() -> None:
+    common = dict(
+        rows=48,
+        cols=48,
+        dx=1.0,
+        dy=1.0,
+        seed=11,
+        relief=0.0,
+    )
+
+    plane_base = generate_synthetic_dsm(preset="plane", roughness_m=0.0, **common)
+    waves_base = generate_synthetic_dsm(preset="waves", roughness_m=0.0, **common)
+    plane_rough = generate_synthetic_dsm(preset="plane", roughness_m=1.0, **common)
+    waves_rough = generate_synthetic_dsm(preset="waves", roughness_m=1.0, **common)
+
+    assert np.allclose(plane_base, waves_base)
+    assert not np.allclose(plane_rough, waves_rough)
+    assert not np.allclose(plane_rough - plane_base, waves_rough - waves_base)
+
+
+def test_generate_synthetic_dsm_parallel_roughness_is_deterministic(monkeypatch) -> None:
+    monkeypatch.setattr(synthetic_mod, "_ROUGHNESS_PARALLEL_MIN_CELLS", 1)
+
+    kwargs = dict(
+        rows=48,
+        cols=48,
+        dx=1.0,
+        dy=1.0,
+        preset="mountain",
+        seed=23,
+        relief=0.0,
+        roughness_m=1.0,
+    )
+
+    z1 = generate_synthetic_dsm(**kwargs)
+    z2 = generate_synthetic_dsm(**kwargs)
+
+    assert np.array_equal(z1, z2)

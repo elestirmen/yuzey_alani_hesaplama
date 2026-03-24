@@ -31,7 +31,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import math
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -68,6 +68,80 @@ _REALISTIC_PRESETS = [
     "karst",
     "alluvial",
 ]
+
+_ROUGHNESS_PROFILE_GROUPS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "smooth": ((1.4, 3.2, 7.8), (1.0, 0.34, 0.09)),
+    "balanced": ((0.9, 2.0, 5.0), (1.0, 0.55, 0.25)),
+    "crisp": ((0.65, 1.55, 3.8), (1.0, 0.70, 0.32)),
+    "broken": ((0.8, 1.9, 4.8), (1.0, 0.62, 0.22)),
+}
+
+_PRESET_ROUGHNESS_GROUP: dict[str, str] = {
+    "plane": "smooth",
+    "valley": "smooth",
+    "coastal": "smooth",
+    "alluvial": "smooth",
+    "waves": "crisp",
+    "crater_field": "crisp",
+    "volcanic": "crisp",
+    "karst": "crisp",
+    "mixed": "crisp",
+    "mountain": "broken",
+    "canyon": "broken",
+    "glacial": "broken",
+    "hills": "balanced",
+    "plateau": "balanced",
+    "terraced": "balanced",
+    "patchwork": "balanced",
+}
+
+_ROUGHNESS_PARALLEL_MIN_CELLS = 1024 * 1024
+_ROUGHNESS_MAX_WORKERS = 2
+
+
+def _stable_text_seed(text: str) -> int:
+    """Return a deterministic 32-bit token for a preset name."""
+    acc = 2166136261
+    for byte in text.encode("utf-8"):
+        acc ^= int(byte)
+        acc = (acc * 16777619) & 0xFFFFFFFF
+    return int(acc)
+
+
+def _preset_roughness_layers(
+    preset: str,
+    *,
+    dx: float,
+    dy: float,
+) -> tuple[list[float], list[float]]:
+    """Build preset-specific roughness layers in pixel space."""
+    px = 0.5 * (float(dx) + float(dy))
+    if px <= 0:
+        raise ValueError("dx/dy must be > 0")
+
+    group = _PRESET_ROUGHNESS_GROUP.get(preset, "balanced")
+    sigma_m_base, amp_base = _ROUGHNESS_PROFILE_GROUPS[group]
+    token = _stable_text_seed(preset)
+
+    sigma_jitter = 0.92 + 0.02 * float(token % 7)
+    mid_amp_jitter = 0.90 + 0.04 * float((token // 7) % 6)
+    fine_amp_jitter = 0.85 + 0.05 * float((token // 43) % 5)
+
+    sigmas_px = [max(0.35, (sigma_m * sigma_jitter) / px) for sigma_m in sigma_m_base]
+    amps = [
+        float(amp_base[0]),
+        float(amp_base[1] * mid_amp_jitter),
+        float(amp_base[2] * fine_amp_jitter),
+    ]
+    return sigmas_px, amps
+
+
+def _roughness_worker_count(*, rows: int, cols: int, layer_count: int) -> int:
+    if layer_count <= 1:
+        return 1
+    if int(rows) * int(cols) < _ROUGHNESS_PARALLEL_MIN_CELLS:
+        return 1
+    return max(1, min(_ROUGHNESS_MAX_WORKERS, int(layer_count)))
 
 
 def _octave_specs(
@@ -490,16 +564,45 @@ def _fractal_gaussian_noise(
     if progress is not None:
         progress.update(label=progress_label, current=0, total=len(layers))
 
-    for i, (s, a) in enumerate(layers, start=1):
-        white = rng.standard_normal((rows, cols)).astype(np.float64, copy=False)
-        sm = gaussian_filter(white, sigma=s, mode="reflect")
+    worker_count = _roughness_worker_count(rows=rows, cols=cols, layer_count=len(layers))
+    seeds = rng.integers(0, 2**31, size=len(layers), dtype=np.int64)
+
+    def _render_layer(seed: int, sigma_px: float) -> np.ndarray:
+        white = np.random.default_rng(int(seed)).standard_normal((rows, cols)).astype(np.float64, copy=False)
+        sm = gaussian_filter(white, sigma=float(sigma_px), mode="reflect")
         sm = sm - float(sm.mean(dtype=np.float64))
         std = float(sm.std(dtype=np.float64))
         if std > 0:
             sm = sm / std
-        acc += a * sm
-        if progress is not None:
-            progress.update(label=progress_label, current=i, total=len(layers))
+        return sm
+
+    if worker_count <= 1:
+        for i, ((s, a), seed) in enumerate(zip(layers, seeds, strict=True), start=1):
+            acc += a * _render_layer(int(seed), s)
+            if progress is not None:
+                progress.update(label=progress_label, current=i, total=len(layers))
+        return acc
+
+    futures: dict[Any, tuple[int, float]] = {}
+    ready: dict[int, tuple[float, np.ndarray]] = {}
+    next_index = 0
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="rough") as executor:
+        for index, ((s, a), seed) in enumerate(zip(layers, seeds, strict=True)):
+            future = executor.submit(_render_layer, int(seed), s)
+            futures[future] = (index, a)
+
+        for future in as_completed(futures):
+            index, amp = futures[future]
+            ready[index] = (amp, future.result())
+            while next_index in ready:
+                ready_amp, layer = ready.pop(next_index)
+                acc += ready_amp * layer
+                next_index += 1
+                completed += 1
+                if progress is not None:
+                    progress.update(label=progress_label, current=completed, total=len(layers))
     return acc
 
 
@@ -1882,7 +1985,8 @@ def generate_synthetic_dsm(
 
     seed_i = int(seed)
     rng_main = np.random.default_rng(seed_i)
-    rng_noise = np.random.default_rng(seed_i + 100)
+    noise_seed = np.random.SeedSequence([seed_i + 100, _stable_text_seed(preset_n)])
+    rng_noise = np.random.default_rng(noise_seed)
     rng_holes = np.random.default_rng(seed_i + 200)
 
     grid = SyntheticGrid(rows=rows, cols=cols, dx=dx, dy=dy)
@@ -2110,9 +2214,7 @@ def generate_synthetic_dsm(
     # MİKRO PÜRÜZLÜLÜK (tüm preset'ler için)
     # ==========================================================================
     if preset_n not in analytic_preset_set and roughness_m > 0:
-        px = 0.5 * (dx + dy)
-        sigmas_px = [0.9 / px, 2.0 / px, 5.0 / px]
-        amps = [1.0, 0.55, 0.25]
+        sigmas_px, amps = _preset_roughness_layers(preset_n, dx=dx, dy=dy)
         z += float(roughness_m) * _fractal_gaussian_noise(
             rng=rng_noise,
             rows=rows,

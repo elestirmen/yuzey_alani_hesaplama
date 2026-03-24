@@ -1,0 +1,102 @@
+{
+  "timestamp_utc": "2026-03-17T12:53:17.993840+00:00",
+  "dem": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_hills_16384x16384_dx0.05_seed0_20260315_213848.tif",
+  "dem_info": {
+    "path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_hills_16384x16384_dx0.05_seed0_20260315_213848.tif",
+    "crs": "EPSG:32636",
+    "transform": [
+      0.05,
+      0.0,
+      500000.0,
+      0.0,
+      -0.05,
+      4500000.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "width": 16384,
+    "height": 16384,
+    "nodata": -9999.0,
+    "dtype": "float32",
+    "dx": 0.05,
+    "dy": 0.05
+  },
+  "synthetic_reference": {
+    "sidecar_path": "C:\\d_surucusu\\yuzey_alani_hesaplama\\out_synth\\synth_hills_16384x16384_dx0.05_seed0_20260315_213848.reference.json",
+    "terrain_family": "raster_first",
+    "has_continuous_ground_truth": false,
+    "continuous_gt_is_gsd_independent": false,
+    "continuous_gt_surface_area_m2": null,
+    "continuous_gt_planar_area_m2": null,
+    "native_reference_surface_area_m2": 879693.6863554148,
+    "resolution_count": 1
+  },
+  "versions": {
+    "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]",
+    "surface_area": "0.1.0",
+    "numpy": "2.4.2",
+    "numba": "0.64.0",
+    "rasterio": "1.5.0",
+    "scipy": "1.17.1",
+    "pandas": "3.0.1",
+    "matplotlib": "3.10.8"
+  },
+  "params": {
+    "gsd_specs": [
+      "native",
+      "0.1",
+      "0.5",
+      "1",
+      "2",
+      "5",
+      "10",
+      "20",
+      "50"
+    ],
+    "gsd_list": [
+      0.05,
+      0.1,
+      0.5,
+      1.0,
+      2.0,
+      5.0,
+      10.0,
+      20.0,
+      50.0
+    ],
+    "allow_upsample": false,
+    "methods": [
+      "jenness_window_8tri",
+      "sector_adaptive_jenness_integral",
+      "tin_2tri_cell",
+      "gradient_multiplier"
+    ],
+    "resampling": "bilinear",
+    "nodata_override": null,
+    "slope_method": "horn",
+    "jenness_weight": 0.25,
+    "integral_N": 5,
+    "adaptive_rel_tol": 0.0001,
+    "adaptive_abs_tol": 0.0,
+    "adaptive_max_level": 5,
+    "adaptive_min_N": 2,
+    "adaptive_roughness_fastpath": true,
+    "adaptive_roughness_threshold": null,
+    "sector_jenness_rel_tol": 0.0001,
+    "sector_jenness_abs_tol": 0.0,
+    "sector_jenness_max_level": 5,
+    "sector_jenness_min_samples": 3,
+    "sigma_mode": "mult",
+    "sigma_m_values": [
+      2.0,
+      5.0
+    ],
+    "roi": null,
+    "roi_id_field": null,
+    "roi_mode": "mask",
+    "roi_all_touched": false,
+    "roi_only": false,
+    "workers": 8
+  }
+}

@@ -19,6 +19,7 @@
   <a href="#-özellikler">Özellikler</a> •
   <a href="#-kurulum">Kurulum</a> •
   <a href="#-kullanım">Kullanım</a> •
+  <a href="#toplu-işlem-batch">Toplu işlem</a> •
   <a href="#-yöntemler">Yöntemler</a> •
   <a href="#-çıktılar">Çıktılar</a>
 </p>
@@ -36,10 +37,11 @@
   - [Bağımlılıklar](#bağımlılıklar)
   - [Kurulum Sorun Giderme](#kurulum-sorun-giderme)
 - [💻 Kullanım](#-kullanım)
-  - [IDE Üzerinden](#yöntem-1-ide-üzerinden-önerilen)
-  - [Komut Satırı](#yöntem-2-komut-satırı-argümanları)
+  - [IDE / `main.py` yapılandırması](#yöntem-1-idemainpy-yapılandırması-önerilen)
+  - [Komut satırı](#yöntem-2-komut-satırı)
+  - [Toplu işlem (batch)](#toplu-işlem-batch)
   - [Sentetik DSM](#sentetik-dsm-metot-kıyaslama)
-  - [VS Code ile Çalıştırma](#yöntem-3-vs-code-ile-çalıştırma)
+  - [VS Code ile çalıştırma](#yöntem-3-vs-code-ile-çalıştırma)
 - [⚙️ Parametreler](#️-parametreler)
   - [Zorunlu Parametreler](#zorunlu-parametreler)
   - [İsteğe Bağlı Parametreler](#isteğe-bağlı-parametreler)
@@ -59,18 +61,20 @@
 En basit kullanım için:
 
 ```bash
-# 1. Repository'yi klonlayın
+# 1. Depoyu klonlayın
 git clone <repo-url>
 cd yuzey_alani_hesaplama
 
 # 2. Bağımlılıkları yükleyin
 pip install -r requirements.txt
 
-# 3. DEM dosyanızı proje dizinine kopyalayın ve çalıştırın
+# 3. Tek bir GeoTIFF için
 python main.py run --dem dem_dosyam.tif --outdir sonuclar
 ```
 
-Veya `main.py` içindeki `DEFAULT_RUN_CONFIG`'i düzenleyerek:
+Eşdeğer olarak paket üzerinden: `python -m surface_area run --dem ... --outdir ...`
+
+`main.py` üstündeki **`config`** sözlüğünü düzenleyip parametreleri tek yerden yönetebilir, ardından argümansız çalıştırabilirsiniz:
 
 ```bash
 python main.py
@@ -112,11 +116,21 @@ python main.py
 </td>
 <td>
 
-### 🛠️ Sentetik DSM Üretimi
-- **16 farklı preset** (10 gerçekçi arazi + 6 test pattern)
-- **fBm noise** tabanlı gerçekçi arazi üretimi
-- **Erozyon simülasyonu** (hidrolik + termal)
-- **Ground truth** referans alan hesaplama
+### 🛠️ Sentetik DSM üretimi
+- **Raster tabanlı preset'ler** (10 gerçekçi arazi + 6 test pattern) ve **analitik benchmark yüzeyleri** (`analytic_*` ailesi)
+- **fBm / ridge / turbulence** gürültüleri ve **erozyon** (hidrolik + termal)
+- Yan dosya **`.reference.json`**: native-grid ve (uygun preset'lerde) sürekli analitik referans alanlar
+
+</td>
+</tr>
+<tr>
+<td colspan="2">
+
+### 📦 Toplu çalıştırma ve performans
+- **Toplu girdi:** klasördeki tüm `.tif/.tiff` dosyaları veya `.demlist` listesi; her DEM için alt klasör + isteğe bağlı `batch_summary.xlsx`
+- **Paralel blok işleme:** `--workers` (CLI varsayılanı `1`; `main.py` içinde `config["workers"]` ile yükseltilebilir)
+- **Native ızgara:** `--gsd native` ile yeniden örnekleme yapmadan kaynak piksel boyutunda hesap
+- **İstem dışı upsample:** varsayılan olarak kaynak ızgaradan **daha ince** hedef GSD reddedilir; `--allow-upsample` ile açılır
 
 </td>
 </tr>
@@ -153,10 +167,10 @@ flowchart TB
     end
 
     subgraph OUTPUT["📤 Çıktı"]
-        XLSX["📊 Excel<br/>results.xlsx<br/>results_long / results_wide"]
+        XLSX["📊 Excel<br/>results.xlsx (+ batch_summary)"]
         JSON["📋 JSON<br/>run_info.json"]
-        PLOTS["📈 PNG<br/>A3D vs GSD grafikleri"]
-        ROI_OUT["📍 ROI Sonuçları<br/>results.xlsx / results_roi_long"]
+        PLOTS["📈 PNG<br/>A3D, oran, runtime, hata…"]
+        ROI_OUT["📍 ROI<br/>results_roi_long"]
     end
 
     DEM --> RESAMPLE
@@ -180,10 +194,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph PRESETS["🎨 Preset Seçimi"]
+    subgraph PRESETS["🎨 Preset seçimi"]
         direction TB
-        REAL["🏔️ Gerçekçi Arazi<br/>mountain, valley, hills<br/>coastal, plateau, canyon<br/>volcanic, glacial, karst, alluvial"]
-        TEST["🔬 Test Pattern<br/>plane, waves, crater_field<br/>terraced, patchwork, mixed"]
+        REAL["🏔️ Gerçekçi arazi<br/>10 preset"]
+        TEST["🔬 Test pattern<br/>6 preset"]
+        ANA["📐 Analitik benchmark<br/>analytic_* · 8 preset"]
     end
 
     subgraph GENERATION["⚙️ Üretim Aşamaları"]
@@ -195,10 +210,11 @@ flowchart LR
     end
 
     subgraph OUTPUTS["📤 Çıktı"]
-        TIFF["🗺️ GeoTIFF<br/>Sentetik DSM"]
-        REF["📊 .reference.json<br/>(Native-Grid Referans A3D)"]
+        TIFF["🗺️ GeoTIFF"]
+        REF["📊 .reference.json<br/>native + sürekli GT"]
     end
 
+    ANA -.-> REF
     PRESETS --> GENERATION
     FBM --> RIDGE --> EROSION --> BUMPS
     GENERATION --> OUTPUTS
@@ -266,33 +282,40 @@ pip install -r requirements.txt
 #### 4️⃣ Kurulumu Doğrulayın
 
 ```bash
-# Versiyon kontrolü
+# Paket sürümü
 python -c "import surface_area; print(f'surface_area v{surface_area.__version__}')"
 
-# Yardım mesajını görüntüle
+# main.py üst düzey yardım (config anahtarları + metot ön ayarları)
 python main.py --help
+
+# Tam CLI (run / synth alt komutları)
+python -m surface_area --help
+python -m surface_area run --help
 ```
 
 ### Bağımlılıklar
 
-`requirements.txt` dosyasında tanımlı ana bağımlılıklar:
+`requirements.txt` içeriği (sürüm alt sınırları):
 
-| Paket | Amaç | Açıklama |
-|:-----:|:-----|:---------|
-| `numpy` | Sayısal hesaplamalar | Array işlemleri, matematiksel fonksiyonlar |
-| `rasterio` | GeoTIFF I/O | Raster okuma/yazma, CRS işlemleri |
-| `scipy` | Bilimsel hesaplamalar | Gaussian filtre, erozyon simülasyonu |
-| `pandas` | Veri işleme | DataFrame, CSV export |
-| `matplotlib` | Grafikler | PNG çıktı üretimi |
-| `shapely` | Geometri işlemleri | ROI/polygon kesişimleri |
-| `pytest` | Test çerçevesi | Geliştirme için |
+| Paket | Amaç |
+|:-----:|:-----|
+| `numpy` | Sayısal diziler ve vektörize hesap |
+| `numba` | JIT ile hızlandırılmış çekirdekler |
+| `rasterio` | GeoTIFF okuma/yazma, CRS, blok pencereleri |
+| `scipy` | Gaussian filtre, erozyon ve bilimsel yardımcılar |
+| `pandas` | Sonuç tabloları |
+| `openpyxl` | Excel (`.xlsx`) üretimi |
+| `matplotlib` | PNG grafikleri |
+| `shapely` | ROI geometrisi (GeoJSON yolu) |
 
-**Manuel kurulum (requirements.txt olmadan):**
+**Testler** için ayrıca `pytest` kurulmalıdır (`pip install pytest`).
+
+**Manuel kurulum (tek satır):**
 ```bash
-pip install numpy rasterio scipy pandas matplotlib pytest shapely
+pip install "numpy>=2.0" "numba>=0.61" "rasterio>=1.4" "scipy>=1.14" "pandas>=2.2" "openpyxl>=3.1" "matplotlib>=3.9" "shapely>=2.0"
 ```
 
-> 💡 **Not (ROI Shapefile):** Shapefile/OGR formatları için `geopandas` veya `fiona` gerekir. GeoJSON için yalnızca `shapely` yeterlidir.
+> **Not (ROI Shapefile):** `.shp` ve benzeri OGR formatları için ortamınızda `fiona` / `geopandas` gerekir. Yalnızca GeoJSON kullanıyorsanız `shapely` yeterlidir.
 
 ### Kurulum Sorun Giderme
 
@@ -329,19 +352,21 @@ pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r req
 
 ## 💻 Kullanım
 
-### Yöntem 1: IDE Üzerinden (Önerilen)
+### Yöntem 1: IDE / `main.py` yapılandırması (önerilen)
 
-`main.py` dosyasındaki `DEFAULT_RUN_CONFIG` alanını düzenleyerek parametreleri tek bir yerden yönetebilirsiniz:
+`main.py` dosyasının üstündeki **`config`** sözlüğünü düzenleyin. Bu sözlük `RunConfig` ile birleştirilir; `method_choice` + `methods`, `gsd` listesi (`"native"` veya sayılar), `allow_upsample`, `workers` vb. buradan yönetilir.
 
-```python
-DEFAULT_RUN_CONFIG = RunConfig(
-    dem="vadi_dsm.tif",           # Girdi DEM dosyası
-    outdir="out_vadi",            # Çıktı klasörü
-    gsd=[0.5, 1, 2, 5, 10],       # Hedef çözünürlükler
-    methods=["gradient_multiplier"],  # Kullanılacak yöntemler
-    plots=True,                   # Grafik üret
-)
-```
+Özet alanlar:
+
+| Alan | Anlamı |
+|:-----|:-------|
+| `dem` | Tek GeoTIFF, `.demlist` dosyası veya `.tif` içeren klasör |
+| `outdir` | Çıktı kökü (toplu girdide her DEM alt klasör) |
+| `gsd` | Örn. `["native", 1, 2, 5]` — `native` kaynak ızgarada hesap |
+| `method_choice` | `default`, `fast`, `balanced`, `jenness_focus`, `full` |
+| `methods` | `None` ise `method_choice` kullanılır; dolu liste verilirse preset yok sayılır |
+| `allow_upsample` | Kaynak çözünürlükten ince hedef GSD’lere izin |
+| `workers` | Blok hesap için işlem sayısı |
 
 Ardından:
 
@@ -349,15 +374,31 @@ Ardından:
 python main.py
 ```
 
-### Yöntem 2: Komut Satırı Argümanları
+### Yöntem 2: Komut satırı
 
 ```bash
-python main.py run \
-  --dem dag_dsm.tif \
-  --outdir out \
-  --gsd 0.5 1 2 5 10 \
-  --methods gradient_multiplier tin_2tri_cell \
-  --plots
+python main.py run ^
+  --dem dag_dsm.tif ^
+  --outdir out ^
+  --gsd native 0.5 1 2 5 10 ^
+  --methods gradient_multiplier tin_2tri_cell ^
+  --plots ^
+  --workers 4
+```
+
+`--gsd` verilmezse CLI, `native` + çoklu metre değerlerini varsayılan listeyle doldurur. Kaynak pikselden **daha ince** hedefler için `--allow-upsample` gerekir (`--no-allow-upsample` varsayılan).
+
+### Toplu işlem (batch)
+
+Aynı parametrelerle birden fazla DEM çalıştırmak için:
+
+1. **Klasör:** `--dem` olarak yalnızca `.tif` / `.tiff` içeren bir dizin verin. Dosyalar ada göre sıralanır; her biri için `outdir/<stem>/` altına sonuç yazılır (aynı kök ada sahip birden fazla dosya varsa çakışmayı önlemek için sonek eklenir).
+2. **Liste dosyası:** `--dem path/to/liste.demlist` — satır başına bir GeoTIFF yolu (`#` ile yorum, boş satırlar atlanır).
+
+İki veya daha fazla DEM işlendiğinde, `outdir` köküne ek olarak **`batch_summary.xlsx`** üretilir (tüm çalıştırmaların özet karşılaştırması).
+
+```bash
+python main.py run --dem ./dem_klasoru --outdir ./sonuclar --gsd native 1 2 --plots
 ```
 
 ### Sentetik DSM (Metot Kıyaslama)
@@ -389,7 +430,9 @@ python -m surface_area run \
 
 #### 2️⃣ Preset'ler
 
-**🗺️ Gerçekçi Arazi Tipleri** (saha benzeri testler için):
+CLI `synth --preset` ve `generate_synthetic_tif.py --preset` için tüm seçenekler `surface_area.synthetic.SYNTHETIC_PRESETS` içinde birleştirilir: **16 raster-öncelikli** preset + **8 analitik** preset.
+
+**🗺️ Gerçekçi arazi** (saha benzeri testler):
 
 | Preset | Açıklama |
 |:------:|:---------|
@@ -404,16 +447,29 @@ python -m surface_area run \
 | `karst` | Karstik arazi (düdenler, mağaralar) |
 | `alluvial` | Alüvyal ova/delta |
 
-**🔬 Test Patternleri** (analitik/doğrulama için):
+**🔬 Test pattern'leri** (hızlı görsel/karşılaştırma):
 
 | Preset | Açıklama |
 |:------:|:---------|
-| `plane` | Düz eğimli yüzey (z = ax + by + c) |
+| `plane` | Düz eğimli yüzey |
 | `waves` | Sinüzoidal dalgalar |
 | `crater_field` | Krater alanı |
 | `terraced` | Teraslı arazi |
 | `patchwork` | Karışık yüzeyler |
 | `mixed` | Maksimum çeşitlilik |
+
+**📐 Analitik benchmark'lar** (`.reference.json` içinde sürekli yüzey üzerinde **continuous ground truth** alanı; metot hataları için ideal):
+
+| Preset | Açıklama |
+|:------:|:---------|
+| `analytic_plane` | Düzlem |
+| `analytic_tilted_plane` | Eğik düzlem |
+| `analytic_sinusoidal` | Sinüs yüzeyi |
+| `analytic_gaussian_hill` | Tek Gauss tepesi |
+| `analytic_multi_gaussian` | Çoklu Gauss |
+| `analytic_saddle` | Eyer yüzeyi |
+| `analytic_dome` | Kubbe |
+| `analytic_hybrid_multiscale` | Çok ölçekli karma |
 
 #### 3️⃣ Önemli Parametreler
 
@@ -427,8 +483,11 @@ python -m surface_area run \
 
 #### 4️⃣ Native-Grid Referans Alan: `generate_synthetic_tif.py`
 
-`generate_synthetic_tif.py`, aynı sentetik yüzeyi üretip **native çözünürlükte** referans A2D/A3D değerlerini hesaplar ve GeoTIFF'in yanına `.reference.json` yazar. `--out` parametresi `{preset}`, `{rows}`, `{cols}`, `{dx}`, `{seed}`, `{timestamp}` gibi şablonları da destekler.
-> Not: Bu değer raster çözünürlüğüne bağlı bir kıyas referansıdır; analitik ground truth değildir.
+`generate_synthetic_tif.py`, aynı sentetik yüzeyi üretip GeoTIFF'in yanına `.reference.json` yazar: **native-grid** referans alanlar, çoklu çözünürlük özetleri ve (analitik preset'lerde) **sürekli yüzey üzerinde integral** ile elde edilen `continuous_ground_truth` alanları.
+
+`--out` parametresi `{preset}`, `{rows}`, `{cols}`, `{dx}`, `{seed}`, `{timestamp}` gibi şablonları destekler.
+
+> Raster tabanlı üretimlerde native-grid referansı çözünürlüğe bağlıdır; analitik preset'lerde ise sürekli GT GSD'den bağımsızdır.
 
 ```bash
 # Sentetik DSM + native-grid referans alan
@@ -489,8 +548,10 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 
 | Parametre | Tip | Varsayılan | Açıklama |
 |:---------:|:---:|:----------:|:---------|
-| `--gsd` | `list[float]` | `0.1, 0.5, 1, 2, 5, 10, 20, 50` | Hedef GSD (Ground Sample Distance) değerleri metre cinsinden |
-| `--methods` | `list[str]` | `jenness_window_8tri, sector_adaptive_jenness_integral, tin_2tri_cell, gradient_multiplier` | Çalıştırılacak hesaplama yöntemleri |
+| `--gsd` | `list` | `native`, sonra `0.1 … 50` (sayılar metre) | Hedef GSD listesi; `native` = kaynak piksel boyutunda hesap (yeniden örnekleme yok) |
+| `--allow-upsample` | bool | `False` | `True` ise kaynak ızgaradan **daha ince** hedef GSD’lere izin |
+| `--methods` | `list[str]` | `jenness_window_8tri`, `sector_adaptive_jenness_integral`, `tin_2tri_cell`, `gradient_multiplier` | Çalıştırılacak hesaplama yöntemleri |
+| `--workers` | `int` | `1` | Blok bazlı hesap için paralel işlem sayısı |
 | `--resampling` | `str` | `bilinear` | Yeniden örnekleme algoritması |
 | `--nodata` | `float` | Otomatik | Nodata değeri (dataset'te tanımlı değilse) |
 | `--slope_method` | `str` | `horn` | Gradient/eğim hesaplama kerneli |
@@ -521,24 +582,25 @@ python main.py run --dem C:\data\dem.tif --outdir C:\results
 
 #### 📏 `--gsd` (Ground Sample Distance)
 
-Hedef çözünürlük değerlerini metre cinsinden belirler. Analiz, her GSD değeri için ayrı ayrı çalıştırılır.
+Hedef çözünürlükleri belirler. Liste **hem** özel anahtar kelime **`native`** **hem** metre cinsinden pozitif sayılar içerebilir. Her sayısal GSD için raster yeniden örneklenir ve seçilen tüm metotlar o hedef için tekrar çalıştırılır; `native` ile yalnızca kaynak ızgarada hesap yapılır.
 
-| Değer | Açıklama | Kullanım Senaryosu |
+| Değer | Açıklama | Kullanım senaryosu |
 |:-----:|:---------|:-------------------|
-| `< 1` | Alt-metre çözünürlük | Mikro-topografya, detaylı yüzey analizi |
-| `1-5` | Yüksek çözünürlük | Standart DEM analizi |
-| `5-20` | Orta çözünürlük | Bölgesel analiz, hızlı sonuç |
-| `> 20` | Düşük çözünürlük | Geniş alan analizi, trend görme |
+| `native` | Yeniden örnekleme yok; DEM’in gerçek `dx`/`dy` değerleri | Hızlı referans, “orijinal grid” karşılaştırması |
+| `< 1` m | Alt-metre çözünürlük | Mikro-topografya (çoğu zaman upsample gerektirir) |
+| `1–5` m | Yüksek çözünürlük | Tipik DEM analizi |
+| `5–20` m | Orta çözünürlük | Bölgesel özet |
+| `> 20` m | Düşük çözünürlük | Geniş alan, trend |
 
 ```bash
-# Çoklu GSD değeri (boşlukla ayrılmış)
---gsd 0.5 1 2 5 10
+# Native ızgara + birkaç metre hedefi
+--gsd native 0.5 1 2 5 10
 
-# Tek değer
+# Sadece tek hedef
 --gsd 1
 ```
 
-> ⚠️ **Dikkat:** Kaynak DEM'in çözünürlüğünden küçük GSD değerleri upsample yapar ve dosya boyutunu önemli ölçüde artırabilir.
+> **Upsample:** Kaynak piksel boyutundan **daha ince** hedef GSD, varsayılan olarak **reddedilir**; bilinçli upsample için `--allow-upsample` kullanın.
 
 ---
 
@@ -783,16 +845,21 @@ python -m surface_area run \
 
 #### 📈 `--plots` (Grafik Üretimi)
 
-Bu flag etkinleştirildiğinde PNG formatında grafikler üretilir:
+Etkinleştirildiğinde `outdir` altında PNG çizimleri üretilir. Veriye bağlı olarak bazı dosyalar atlanabilir (ör. hata dağılımı için referans yoksa).
 
-| Grafik | Açıklama |
-|:-------|:---------|
-| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log ölçek) |
-| `ratio_vs_GSD.png` | A3D/A2D oranı vs GSD |
-| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (sadece multiscale) |
+| Dosya | Açıklama |
+|:------|:---------|
+| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log-x); varsa native-grid ve sürekli GT referans çizgileri |
+| `ratio_vs_GSD.png` | A3D/A2D vs GSD |
+| `surface_excess_vs_GSD.png` | (A3D/A2D − 1) yüzde olarak |
+| `continuous_gt_rel_err_vs_GSD.png` | Sürekli GT’ye göre bağıl hata (`.reference.json` uygunsa) |
+| `native_grid_ref_rel_err_vs_GSD.png` | Native-grid referansa göre bağıl hata (`.reference.json` uygunsa) |
+| `runtime_vs_GSD.png` | Hesaplama + yeniden örnekleme süresi vs GSD |
+| `error_vs_runtime.png` | Hata–süre trade-off (GT veya native ref hatası varsa) |
+| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (yalnızca `multiscale_decomposed_area`) |
 
 ```bash
---plots  # Grafik üretimini etkinleştir
+--plots
 ```
 
 ---
@@ -1081,7 +1148,8 @@ Her satır bir (GSD, method) kombinasyonunu temsil eder.
 | `A3D` | float | 3D yüzey alanı (m²) |
 | `ratio` | float | Alan oranı = A3D / A2D |
 | `valid_cells` | int | Geçerli hücre sayısı |
-| `runtime_sec` | float | Hesaplama süresi (saniye, IO hariç) |
+| `runtime_sec` | float | Yüzey alanı hesabı süresi (saniye; blok işleme) |
+| `resample_runtime_sec` | float | DEM’i ilgili GSD’ye yeniden örnekleme süresi (saniye); `native` satırında genelde yok veya 0 |
 | `note` | str | Parametre özeti |
 
 **Adaptive bilinear için ek kolonlar (results_long sayfasında):**
@@ -1112,6 +1180,7 @@ Buradaki seviye, sector adaptive subdivision seviyesidir:
 |:------|:---:|:---------|
 | `a_topo` | float | Topoğrafik alan bileşeni |
 | `a_micro` | float | Mikro-pürüzlülük bileşeni |
+| `a_total` | float | Toplam çok ölçekli yüzey alanı (topo + mikro ile tutarlı) |
 | `micro_ratio` | float | A_micro / A_total |
 | `sigma_m` | float | Kullanılan sigma değeri (metre) |
 
@@ -1131,7 +1200,14 @@ Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
 | `A2D`, `A3D`, `ratio` | float | ROI bazlı alanlar ve oran |
 | `valid_cells` | int | ROI ile kesişen geçerli hücre sayısı |
 | `runtime_sec` | float | Yaklaşık hesaplama süresi |
+| `resample_runtime_sec` | float | Yeniden örnekleme süresi |
 | `note` | str | ROI modu ve notlar |
+
+Yan dosya **`.reference.json`** bulunduğunda `results_long` satırlarına `continuous_gt_*`, `synthetic_native_ref_*` ve türev hata kolonları eklenebilir (sentetik/analitik kıyaslar için).
+
+#### `batch_summary.xlsx` (toplu çalıştırma)
+
+Birden fazla DEM işlendiğinde `outdir` kökünde üretilir; `batch_summary` sayfasında tüm DEM’lerin özet metriklerini karşılaştırabilirsiniz.
 
 ### Metadata
 
@@ -1162,11 +1238,7 @@ Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
 
 ### Grafikler (`--plots`)
 
-| Dosya | Açıklama |
-|:------|:---------|
-| `A3D_vs_GSD.png` | 3D yüzey alanı vs GSD (log ölçek) |
-| `ratio_vs_GSD.png` | A3D/A2D oranı vs GSD |
-| `micro_ratio_vs_GSD.png` | Mikro oran vs GSD (multiscale) |
+Ayrıntılı dosya listesi için yukarıdaki **📈 `--plots` (Grafik üretimi)** tablosuna bakın.
 
 ---
 
@@ -1200,25 +1272,27 @@ Her satır bir (GSD, ROI, method) kombinasyonunu temsil eder.
 ```
 yuzey_alani_hesaplama/
 ├── 📂 surface_area/
-│   ├── __init__.py          # Paket tanımı, versiyon (v0.1.0)
-│   ├── __main__.py           # Entry point
-│   ├── cli.py                # Komut satırı arayüzü
-│   ├── io.py                 # Raster I/O işlemleri, blok işleme
-│   ├── methods.py            # 7 yüzey alanı algoritması
-│   ├── multiscale.py         # Gaussian filtre ile ayrıştırma
-│   ├── plotting.py           # PNG grafik fonksiyonları
-│   ├── progress.py           # İlerleme / log çıktısı
-│   ├── roi.py                # ROI (GeoJSON/Shapefile) işlemleri
-│   └── synthetic.py          # Sentetik DSM üretimi
-│                             # (fBm, ridge, turbulence noise)
-│                             # (hidrolik + termal erozyon)
+│   ├── __init__.py          # Paket tanımı, sürüm
+│   ├── __main__.py          # python -m surface_area girişi
+│   ├── cli.py               # run / synth alt komutları, Excel, batch özeti
+│   ├── io.py                # Raster I/O, blok pencereleri, yeniden örnekleme
+│   ├── methods.py           # Yedi yüzey alanı algoritması (numba hızlandırmalı çekirdekler)
+│   ├── multiscale.py        # Gaussian ayrıştırma
+│   ├── plotting.py          # PNG grafikleri
+│   ├── progress.py          # İlerleme çıktısı
+│   ├── roi.py               # ROI (GeoJSON / Shapefile)
+│   ├── synthetic.py         # Sentetik DSM + preset'ler
+│   └── analytic_surfaces.py # Analitik benchmark yüzeyleri ve sürekli GT integrali
 ├── 📂 tests/
-│   ├── conftest.py           # Test konfigürasyonu
-│   ├── test_synthetic.py     # Sentetik yüzey doğruluk testleri
-│   ├── test_cli_synth.py     # CLI synth testleri
-│   ├── test_generate_synthetic_tif_script.py  # Script + referans JSON testleri
-│   ├── test_adaptive_and_roi.py  # Adaptive + ROI testleri
-│   └── test_sector_adaptive_jenness.py  # Sector Adaptive Jenness testleri
+│   ├── conftest.py
+│   ├── test_synthetic.py
+│   ├── test_cli_synth.py
+│   ├── test_generate_synthetic_tif_script.py
+│   ├── test_adaptive_and_roi.py
+│   ├── test_sector_adaptive_jenness.py
+│   ├── test_main_batch.py       # main.py toplu işlem
+│   ├── test_parallel_cli.py     # --workers davranışı
+│   └── test_plotting.py         # Grafik üretimi
 ├── 📂 .githooks/
 │   └── pre-commit            # Git hook'ları
 ├── 📂 .vscode/
@@ -1259,7 +1333,10 @@ pytest --cov=surface_area --cov-report=html
 | `tests/test_cli_synth.py` | `python -m surface_area synth` komutunun ürettiği GeoTIFF/metadata kontrolleri |
 | `tests/test_generate_synthetic_tif_script.py` | `generate_synthetic_tif.py` script'inin GeoTIFF + `.reference.json` üretimi |
 | `tests/test_adaptive_and_roi.py` | Adaptif integral diagnostikleri ve ROI (mask/fraction) akışı |
-| `tests/test_sector_adaptive_jenness.py` | Yeni sector-based continuous Jenness yönteminin analitik ve CLI smoke testleri |
+| `tests/test_sector_adaptive_jenness.py` | Sector adaptive Jenness analitik ve CLI testleri |
+| `tests/test_main_batch.py` | Klasör / `.demlist` ile toplu çalıştırma |
+| `tests/test_parallel_cli.py` | Çok işlemci blok hesaplama |
+| `tests/test_plotting.py` | PNG çizimleri |
 
 ### Test Yüzeyleri
 
@@ -1283,25 +1360,21 @@ pytest --cov=surface_area --cov-report=html
 | **Upsample dikkat** | Kaynak çözünürlükten daha küçük GSD çıktıyı çok büyütebilir |
 | **Multiscale** | `--sigma_mode mult` genellikle daha tutarlı sonuç verir |
 | **Bellek** | `--keep_resampled` kapalı tutun (varsayılan) |
-| **Hızlı sonuç** | Sadece `gradient_multiplier` kullanın (en hızlı yöntem) |
+| **Hızlı sonuç** | `method_choice="fast"` veya yalnızca `gradient_multiplier` |
+| **Paralellik** | `--workers` değerini I/O sınırına göre artırın (ör. 2–8); her ortamda linear hızlanma beklemeyin |
 
 ---
 
 ## 📜 Sürüm Geçmişi
 
-### v0.1.0 - İlk Sürüm
+### v0.1.0 (güncel kod tabanı)
 
-- ✅ 7 yüzey alanı hesaplama yöntemi
-- ✅ Multiscale (Gaussian) ayrıştırma
-- ✅ CLI arayüzü
-- ✅ 16 sentetik DSM preset'i (10 gerçekçi arazi + 6 test pattern)
-  - **Gerçekçi arazi:** mountain, valley, hills, coastal, plateau, canyon, volcanic, glacial, karst, alluvial
-  - **Test pattern:** plane, waves, crater_field, terraced, patchwork, mixed
-- ✅ fBm, ridge, turbulence noise üretimi
-- ✅ Hidrolik ve termal erozyon simülasyonu
-- ✅ `generate_synthetic_tif.py` ile native-grid referans alan çıktısı
-- ✅ ROI (GeoJSON/Shapefile) desteği (mask + fraction modları)
-- ✅ Excel/JSON/PNG çıktıları
+- 7 yüzey alanı yöntemi; `main.py` üzerinde **metot ön ayarları** (`default`, `fast`, `balanced`, …)
+- **Native GSD** (`native`), **upsample kontrolü** (`--allow-upsample`), **çok işlemci** blok hesaplama (`--workers`)
+- **Toplu işlem:** DEM klasörü / `.demlist` + `batch_summary.xlsx`
+- Sentetik üretim: raster preset'leri + **analitik** `analytic_*` yüzeyleri; `generate_synthetic_tif.py` ile zengin `.reference.json`
+- ROI (mask / fraction), Excel + JSON + genişletilmiş PNG seti (`runtime`, hata eğrileri, vb.)
+- Bağımlılıklar: `numpy` 2.x, `numba`, `openpyxl`, … (`requirements.txt`)
 
 ---
 
